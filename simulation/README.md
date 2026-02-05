@@ -90,7 +90,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
   - **-90° position**: Link 1 points backward horizonatlly (-X direction assuming yaw is 0°)
   - **Positive rotation**: From vertical (+Z) toward forward horizontal in +X direction
   - **Negative rotation**: From vertical (+Z) toward backward horizontal in -X direction
-  - **Constraint**: Upper hemisphere operation (-90° to 90°, cannot go below ground)
+  - **Constraint**: Upper hemisphere operation (-90° to 90° where 0° is vertical, cannot go below ground)
 - **Physical behavior**: Controls the elevation angle of the entire arm chain
 
 #### Joint 3: Elbow 1 Pitch (First Elbow)
@@ -116,7 +116,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
   - **0° position**: Link 3 fully extended in line with Link 2 (no bend)
   - **Positive rotation**: Link 3 bends forward (continuing the bend from Elbow 1)
   - **Negative rotation**: Link 3 bends backward (can straighten or counter-bend)
-  - **Industry terms**: Wrist pitch, secondary elbow flexion
+  - **Industry terms**: Secondary elbow flexion
   - **Behavior**: Cumulative effect with Elbow 1; both positive angles increase forward bend
 - **Physical behavior**: Second articulation allowing fine positioning and complex arm shapes
 
@@ -131,7 +131,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 
 ### Workspace Description
 **Reachable Workspace**:
-- **Shape**: Hemisphere (upper half) in the positive Z plan with a 9 unit radius
+- **Shape**: Hemisphere (upper half) in the positive Z plane with a 9 unit radius
 - **Maximum radius**: 9 units (all links fully extended)
 - **Minimum radius**: ~3 units (maximum fold back, limited by joint ranges)
 - **Volume**: Constrained by ground plane (Z ≥ 0 enforced)
