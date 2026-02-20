@@ -15,7 +15,8 @@ The coordinate system follows:
     - Z-axis: Positive upward
     - Origin: Robot base at (0, 0, 0)
 
-All links are 3 units long, giving a total reach of 9 units when fully extended.
+All lengths are expressed in millimeters. The default links are 101, 95, and
+168 mm, giving a total reach of 364 mm when fully extended.
 
 Usage:
     from simulation.models.three_link_arm import ThreeLinkArm
@@ -202,7 +203,7 @@ class ThreeLinkArm:
     
     @property
     def total_reach(self) -> float:
-        """Maximum reach of the arm."""
+        """Maximum reach of the arm in millimeters."""
         return self.config.total_reach
     
     def get_joint_limits(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -361,7 +362,7 @@ class ThreeLinkArm:
             if pos[2] < ground_z:
                 name = position_names[i] if i < len(position_names) else f"point_{i}"
                 violations.append(
-                    f"{name} at z={pos[2]:.3f} is below ground (z={ground_z})"
+                    f"{name} at z={pos[2]:.3f} mm is below ground (z={ground_z} mm)"
                 )
         
         is_valid = len(violations) == 0
@@ -506,7 +507,7 @@ class ThreeLinkArm:
         return (
             f"ThreeLinkArm(name='{self.config.name}', "
             f"joints={self.num_joints}, "
-            f"total_reach={self.total_reach:.1f})"
+            f"total_reach={self.total_reach:.1f} mm)"
         )
     
     def summary(self) -> str:
@@ -516,7 +517,7 @@ class ThreeLinkArm:
             f"  {self.config.name}",
             f"{'='*50}",
             f"  Total Joints: {self.num_joints}",
-            f"  Total Reach: {self.total_reach:.1f} units",
+            f"  Total Reach: {self.total_reach:.1f} mm",
             f"  Ground Collision Check: {'Enabled' if self.config.enable_ground_collision else 'Disabled'}",
             f"",
             f"  Joints:",
@@ -534,7 +535,7 @@ class ThreeLinkArm:
         lines.append(f"  Links:")
         
         for i, link in enumerate(self.config.links):
-            lines.append(f"    [{i}] {link.name}: {link.length:.1f} units")
+            lines.append(f"    [{i}] {link.name}: {link.length:.1f} mm")
         
         lines.append(f"{'='*50}")
         

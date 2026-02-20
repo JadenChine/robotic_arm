@@ -32,10 +32,10 @@ def test_home_position():
     arm.go_home()
     
     pos = arm.get_end_effector_position()
-    expected = np.array([0, 0, 9])
+    expected = np.array([0, 0, 364])
     
     print(f"End effector at home: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (0, 0, 9)")
+    print(f"Expected: (0, 0, 364)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -55,10 +55,10 @@ def test_horizontal_position():
     arm.set_joint_angles([0, np.pi/2, 0, 0])
     
     pos = arm.get_end_effector_position()
-    expected = np.array([9, 0, 0])
+    expected = np.array([364, 0, 0])
     
     print(f"End effector horizontal: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (9, 0, 0)")
+    print(f"Expected: (364, 0, 0)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -77,10 +77,10 @@ def test_base_rotation():
     arm.set_joint_angles([np.pi/2, np.pi/2, 0, 0])
     
     pos = arm.get_end_effector_position()
-    expected = np.array([0, 9, 0])
+    expected = np.array([0, 364, 0])
     
     print(f"End effector (base=90°): ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (0, 9, 0)")
+    print(f"Expected: (0, 364, 0)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -115,6 +115,7 @@ def test_ground_collision():
     """Test ground collision detection."""
     print("\n=== Test: Ground Collision Detection ===")
     arm = ThreeLinkArm()
+    ground_z = arm.config.ground_plane_z
     
     # Configuration that might put end effector below ground
     # With shoulder tilted forward and elbows bent forward (toward ground)
@@ -124,18 +125,19 @@ def test_ground_collision():
     is_valid, violations = arm.check_ground_collision()
     positions = arm.get_all_joint_positions()
     
-    print(f"Joint positions (z values):")
+    print(f"Joint positions (z values in mm):")
     for i, pos in enumerate(positions):
         name = ['Shoulder', 'Elbow 1', 'Elbow 2', 'End Effector'][i]
         print(f"  {name}: z = {pos[2]:.4f}")
     
+    print(f"Ground plane z-limit: {ground_z} mm")
     print(f"Valid (no ground collision): {is_valid}")
     if not is_valid:
         for v in violations:
             print(f"  Violation: {v}")
     
-    # Check if any z < 0
-    any_below = any(pos[2] < 0 for pos in positions)
+    # Check if any z below allowed ground plane
+    any_below = any(pos[2] < ground_z for pos in positions)
     
     if any_below and not is_valid:
         print("✓ PASSED (collision correctly detected)")

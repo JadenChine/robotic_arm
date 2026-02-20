@@ -123,9 +123,11 @@ class ArmViewer:
         
         # Set axis limits based on arm reach
         reach = self.arm.total_reach * 1.2  # Add 20% margin
+        ground_z = self.arm.config.ground_plane_z
+        z_max = max(reach, ground_z + self.arm.total_reach * 1.2)
         ax.set_xlim(-reach, reach)
         ax.set_ylim(-reach, reach)
-        ax.set_zlim(0, reach)  # Z starts at 0 (ground)
+        ax.set_zlim(ground_z, z_max)
         
         # Labels
         ax.set_xlabel('X', fontsize=12, fontweight='bold', color=self.COLORS['axis_x'])
@@ -143,26 +145,27 @@ class ArmViewer:
         self._draw_origin_axes()
         
     def _draw_ground_plane(self):
-        """Draw the ground plane (XY plane at Z=0)."""
+        """Draw the ground plane (XY plane at configured ground_z)."""
         ax = self._ax
         reach = self.arm.total_reach
+        ground_z = self.arm.config.ground_plane_z
         
-        # Create grid for ground plane
-        grid_size = int(reach)
+        # Create grid for ground plane with ~20 mm spacing (capped to avoid huge grids)
+        grid_size = max(10, int(np.ceil(reach / 20.0)))
         x = np.linspace(-reach, reach, grid_size * 2 + 1)
         y = np.linspace(-reach, reach, grid_size * 2 + 1)
         
         # Draw grid lines
         for xi in x:
-            ax.plot([xi, xi], [-reach, reach], [0, 0], 
+            ax.plot([xi, xi], [-reach, reach], [ground_z, ground_z], 
                    color=self.COLORS['ground_grid'], alpha=0.3, linewidth=0.5)
         for yi in y:
-            ax.plot([-reach, reach], [yi, yi], [0, 0],
+            ax.plot([-reach, reach], [yi, yi], [ground_z, ground_z],
                    color=self.COLORS['ground_grid'], alpha=0.3, linewidth=0.5)
         
         # Draw ground plane surface (semi-transparent)
         xx, yy = np.meshgrid([-reach, reach], [-reach, reach])
-        zz = np.zeros_like(xx)
+        zz = np.full_like(xx, ground_z)
         ax.plot_surface(xx, yy, zz, alpha=0.1, color=self.COLORS['ground'])
         
     def _draw_origin_axes(self):
