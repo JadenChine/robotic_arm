@@ -208,11 +208,7 @@ Use the sliders to control each joint:
 pipenv run python simulation/scripts/automated_demo.py
 ```
 
-Choose from multiple demo modes:
-- `basic`: Range of motion demonstration
-- `sweep`: Workspace coverage sweep
-- `reach`: Maximum reach test
-- `pick_place`: Simulated pick-and-place
+Runs a single comprehensive sequence covering sweeps, reaches, bends, line traces, and joint-only movements that largely hold the end effector in place.
 
 ### Running Tests
 ```bash

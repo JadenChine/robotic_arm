@@ -54,9 +54,10 @@ class ArmViewer:
     # Color scheme
     COLORS = {
         'link': '#2E86AB',          # Blue for links
-        'joint': '#A23B72',          # Magenta for joints
-        'end_effector': '#F18F01',   # Orange for end effector
-        'ground': '#C5C5C5',         # Gray for ground
+        'joint': '#000000',          # Black for joints
+        'end_effector': '#E63946',   # Red for end effector
+        'ground': '#b7f3c7',         # Subtle green for ground plane
+        'bound': '#f3b7b7',          # Subtle red for lower bound plane
         'ground_grid': '#888888',    # Darker gray for grid
         'axis_x': '#E63946',         # Red for X axis
         'axis_y': '#2A9D8F',         # Green for Y axis
@@ -140,33 +141,67 @@ class ArmViewer:
         
         # Draw ground plane
         self._draw_ground_plane()
+
+        # Draw lower bound plane
+        self._draw_bound_plane()
         
         # Draw coordinate axes at origin
         self._draw_origin_axes()
+
+        # Remove pane grid lines while keeping panes and labels
+        self._disable_pane_grids()
+
         
     def _draw_ground_plane(self):
-        """Draw the ground plane (XY plane at configured ground_z)."""
+        """Draw a subtle reference plane at z = 0."""
         ax = self._ax
         reach = self.arm.total_reach
-        ground_z = self.arm.config.ground_plane_z
+        plane_z = 0.0  # visual reference at z = 0
         
         # Create grid for ground plane with ~20 mm spacing (capped to avoid huge grids)
-        grid_size = max(10, int(np.ceil(reach / 20.0)))
+        grid_size = max(10, int(np.ceil(reach / 60.0)))
         x = np.linspace(-reach, reach, grid_size * 2 + 1)
         y = np.linspace(-reach, reach, grid_size * 2 + 1)
         
         # Draw grid lines
         for xi in x:
-            ax.plot([xi, xi], [-reach, reach], [ground_z, ground_z], 
-                   color=self.COLORS['ground_grid'], alpha=0.3, linewidth=0.5)
+            ax.plot([xi, xi], [-reach, reach], [plane_z, plane_z], 
+                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
         for yi in y:
-            ax.plot([-reach, reach], [yi, yi], [ground_z, ground_z],
-                   color=self.COLORS['ground_grid'], alpha=0.3, linewidth=0.5)
+            ax.plot([-reach, reach], [yi, yi], [plane_z, plane_z],
+                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
         
         # Draw ground plane surface (semi-transparent)
         xx, yy = np.meshgrid([-reach, reach], [-reach, reach])
-        zz = np.full_like(xx, ground_z)
-        ax.plot_surface(xx, yy, zz, alpha=0.1, color=self.COLORS['ground'])
+        zz = np.full_like(xx, plane_z)
+        ax.plot_surface(xx, yy, zz, alpha=0.08, color=self.COLORS['ground'])
+
+    def _draw_bound_plane(self):
+        """Draw a subtle red plane at the lower bound (z = -65)."""
+        ax = self._ax
+        reach = self.arm.total_reach
+        plane_z = -65.0
+
+        grid_size = max(10, int(np.ceil(reach / 60.0)))
+        x = np.linspace(-reach, reach, grid_size * 2 + 1)
+        y = np.linspace(-reach, reach, grid_size * 2 + 1)
+
+        for xi in x:
+            ax.plot([xi, xi], [-reach, reach], [plane_z, plane_z],
+                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
+        for yi in y:
+            ax.plot([-reach, reach], [yi, yi], [plane_z, plane_z],
+                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
+
+        xx, yy = np.meshgrid([-reach, reach], [-reach, reach])
+        zz = np.full_like(xx, plane_z)
+        ax.plot_surface(xx, yy, zz, alpha=0.08, color=self.COLORS['bound'])
+
+    def _disable_pane_grids(self):
+        """Hide the auto-generated pane grid lines but keep panes and labels visible."""
+        for axis in (self._ax.xaxis, self._ax.yaxis, self._ax.zaxis):
+            axis._axinfo['grid']['linewidth'] = 0.0
+            axis._axinfo['grid']['color'] = (1.0, 1.0, 1.0, 0.0)
         
     def _draw_origin_axes(self):
         """Draw coordinate axes at the origin."""
@@ -338,7 +373,7 @@ class ArmViewer:
         self._joint_points = ax.scatter(
             xs[:-1], ys[:-1], zs[:-1],
             c=self.COLORS['joint'],
-            s=100,
+            s=50,
             marker='o',
             depthshade=True
         )
@@ -347,8 +382,8 @@ class ArmViewer:
         self._end_effector_point = ax.scatter(
             [xs[-1]], [ys[-1]], [zs[-1]],
             c=self.COLORS['end_effector'],
-            s=150,
-            marker='*',
+            s=80,
+            marker='o',
             depthshade=True
         )
         
