@@ -204,11 +204,11 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             name="shoulder_pitch",
             joint_type=JointType.REVOLUTE,
             axis='y',
-            limit_lower=-np.pi/2,         # -90 degrees (horizontal forward)
-            limit_upper=np.pi/2,          # +90 degrees (horizontal backward)
+            limit_lower=-np.pi/2,         # -90 degrees (horizontal backward)
+            limit_upper=np.pi/2,          # +90 degrees (horizontal forward)
             home_position=0.0,            # Start pointing straight up
             max_velocity=np.pi,
-            description="Shoulder joint part 2: Pitch - 0° is straight up, ±90° is horizontal"
+            description="Shoulder joint part 2: Pitch - 0° is straight up, +90° is forward, -90° is backward"
         ),
         JointConfig(
             name="elbow_1_pitch",
@@ -218,7 +218,7 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             limit_upper=np.pi/2,          # +90 degrees
             home_position=0.0,
             max_velocity=np.pi,
-            description="First elbow joint - ±90° bend forward/backward"
+            description="First elbow joint - positive bends forward, negative bends backward"
         ),
         JointConfig(
             name="elbow_2_pitch",
@@ -228,7 +228,7 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             limit_upper=np.pi/2,          # +90 degrees
             home_position=0.0,
             max_velocity=np.pi,
-            description="Second elbow joint - ±90° bend forward/backward"
+            description="Second elbow joint - positive bends forward, negative bends backward"
         ),
     ],
     links=[
@@ -294,15 +294,16 @@ def create_n_link_config(
                 description=f"Joint {i+1}: Base rotation"
             ))
         elif i == 1:
-            # Shoulder pitch - constrained to upper hemisphere
+            # Shoulder pitch - constrained to upper hemisphere (-90 to +90 degrees from vertical)
+            # 0 is up, +90 is forward
             joints.append(JointConfig(
                 name=f"joint_{i+1}_shoulder_pitch",
                 joint_type=JointType.REVOLUTE,
                 axis='y',
-                limit_lower=0.0,
-                limit_upper=np.pi,
-                home_position=np.pi/2,
-                description=f"Joint {i+1}: Shoulder pitch (upper hemisphere)"
+                limit_lower=-np.pi/2,
+                limit_upper=np.pi/2,
+                home_position=0.0,
+                description=f"Joint {i+1}: Shoulder pitch (0=Up)"
             ))
         else:
             # Elbow joints

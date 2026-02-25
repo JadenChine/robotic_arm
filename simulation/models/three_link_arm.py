@@ -141,38 +141,36 @@ class ThreeLinkArm:
         
         # Build the Elementary Transform Sequence
         # 
-        # The kinematic chain is designed so that:
+        # ETS chain (all transforms are relative to the previous local frame):
         # - Base at origin (0, 0, 0)
-        # - XY plane is the ground plane
-        # - Z-axis points upward
-        # - Shoulder is a compound joint (yaw + pitch at same location)
-        # - When shoulder_pitch = 0°, arm points straight up (+Z)
-        # - When shoulder_pitch = +90°, arm is horizontal along +X (forward)
-        # - When shoulder_pitch = -90°, arm is horizontal along -X (backward)
-        # - Both elbow joints bend in the same plane (positive = forward toward +X)
+        # - Joint 1 (Base Yaw): Rotates entire arm in XY plane about Z-axis
+        # - Constant -90° Y-rotation: Aligns local X-axis with vertical direction
+        #   (required so ET.tx translations extend upward when shoulder_pitch = 0°)
+        # - Joint 2 (Shoulder Pitch): 0° = vertical, +90° = horizontal forward
+        # - All links extend along local X-axis via ET.tx()
+        # - Elbows bend in pitch plane (positive = forward flexion)
         
         ets = (
-            # Joint 1: Base rotation about Z-axis (yaw in XY plane) - Shoulder part 1
+            # Joint 1: Base yaw rotation (rotates in ground plane)
             ET.Rz(qlim=[j1.limit_lower, j1.limit_upper]) *
             
-            # Constant -90° pitch to set reference frame so 0° = up
-            # This rotates local X from world +X to world +Z (up)
+            # Constant coordinate frame alignment: rotates local X to point vertically
+            # This allows ET.tx() translations to extend upward when shoulder is at 0°
             ET.Ry(-np.pi/2) *
             
-            # Joint 2: Shoulder pitch - 0° is up, positive is forward (+X), negative is backward
-            # No flip: positive theta rotates local X from +Z toward +X
+            # Joint 2: Shoulder pitch (0° = vertical up, +90° = horizontal forward)
             ET.Ry(qlim=[j2.limit_lower, j2.limit_upper]) *
             
-            # Link 1: Upper arm extends along the local X-axis
+            # Link 1: Upper arm extends along local X-axis
             ET.tx(L1) *
             
-            # Joint 3: First elbow pitch - positive bends forward
+            # Joint 3: First elbow pitch (positive = forward bend)
             ET.Ry(qlim=[j3.limit_lower, j3.limit_upper]) *
             
             # Link 2: Forearm extends along local X-axis
             ET.tx(L2) *
             
-            # Joint 4: Second elbow pitch - positive bends forward
+            # Joint 4: Second elbow pitch (positive = forward bend)
             ET.Ry(qlim=[j4.limit_lower, j4.limit_upper]) *
             
             # Link 3: Hand/end effector extends along local X-axis
