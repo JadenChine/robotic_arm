@@ -9,7 +9,7 @@ allowing the user to:
 - Monitor constraint violations
 
 Usage:
-    pipenv run python simulation/scripts/manual_control.py
+    pipenv run python sim/scripts/manual_control.py
 
 Author: Senior Design Team  
 Date: January 2026
@@ -18,16 +18,13 @@ Date: January 2026
 import sys
 from pathlib import Path
 
-# Add parent directories to path for imports
-_script_dir = Path(__file__).parent
-_sim_dir = _script_dir.parent
-if str(_sim_dir) not in sys.path:
-    sys.path.insert(0, str(_sim_dir))
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_MODEL_DIR = _SCRIPT_DIR.parent / "model"
+if str(_MODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_DIR))
 
-import numpy as np
-
-from models.three_link_arm import ThreeLinkArm
-from visualization.view_robot import ArmViewer
+from arm_model import ThreeLinkArm
+from view_robot import ArmViewer
 
 
 def main():

@@ -13,8 +13,8 @@ Features:
 - Workspace visualization (optional)
 
 Usage:
-    from simulation.visualization.viewer import ArmViewer
-    from simulation.models.three_link_arm import ThreeLinkArm
+    from view_robot import ArmViewer
+    from arm_model import ThreeLinkArm
     
     arm = ThreeLinkArm()
     viewer = ArmViewer(arm)
@@ -26,17 +26,15 @@ Date: January 2026
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button, RadioButtons
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.widgets import Slider, Button
 from typing import Optional, List, Tuple, Callable
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
-_module_dir = Path(__file__).parent.parent
-if str(_module_dir) not in sys.path:
-    sys.path.insert(0, str(_module_dir))
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_MODEL_DIR = _SCRIPT_DIR.parent / "model"
+if str(_MODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_DIR))
 
 
 class ArmViewer:
@@ -523,7 +521,7 @@ class TrajectoryAnimator:
 def demo():
     """Demonstration of the viewer."""
     # Import here to avoid circular imports
-    from models.three_link_arm import ThreeLinkArm
+    from arm_model import ThreeLinkArm
     
     print("Creating arm and viewer...")
     arm = ThreeLinkArm()

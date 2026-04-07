@@ -9,20 +9,20 @@ Validates:
 - Position calculations
 
 Usage:
-    pipenv run python simulation/tests/test_arm.py
+    pipenv run python sim/scripts/test_arm.py
 """
 
 import sys
 from pathlib import Path
 
-# Add parent directories to path
-_test_dir = Path(__file__).parent
-_sim_dir = _test_dir.parent
-if str(_sim_dir) not in sys.path:
-    sys.path.insert(0, str(_sim_dir))
-
 import numpy as np
-from models.three_link_arm import ThreeLinkArm
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_MODEL_DIR = _SCRIPT_DIR.parent / "model"
+if str(_MODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_DIR))
+
+from arm_model import ThreeLinkArm
 
 
 def test_home_position():

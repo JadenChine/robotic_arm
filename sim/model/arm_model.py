@@ -19,7 +19,7 @@ All lengths are expressed in millimeters. The default links are 101, 95, and
 168 mm, giving a total reach of 364 mm when fully extended.
 
 Usage:
-    from simulation.models.three_link_arm import ThreeLinkArm
+    from sim.model.arm_model import ThreeLinkArm
     
     arm = ThreeLinkArm()
     arm.set_joint_angles([0, np.pi/2, 0, 0])  # Home position
@@ -38,16 +38,7 @@ import roboticstoolbox as rtb
 from roboticstoolbox import ET, Robot
 from spatialmath import SE3
 
-# Local imports
-import sys
-from pathlib import Path
-
-# Add parent directory to path for imports
-_module_dir = Path(__file__).parent.parent
-if str(_module_dir) not in sys.path:
-    sys.path.insert(0, str(_module_dir))
-
-from config.robot_params import RobotConfig, DEFAULT_3_LINK_CONFIG
+from robot_params import RobotConfig, DEFAULT_3_LINK_CONFIG
 
 
 @dataclass

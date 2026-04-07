@@ -161,31 +161,17 @@ The maximum workspace is a hemisphere of radius 364 mm centered at the origin, o
 
 ## Project Structure
 ```
-simulation/
-├── __init__.py              # Package initialization
-├── models/
-│   ├── __init__.py
-│   └── three_link_arm.py    # Main robot model (primary file)
-├── config/
-│   ├── __init__.py
-│   └── robot_params.py      # Base robot configuration classes
-├── core/
-│   ├── __init__.py
-│   └── constraints.py       # Constraint system (joint limits, collision)
-├── visualization/
-│   ├── __init__.py
-│   └── view_robot.py        # Interactive 3D matplotlib viewer
-├── kinematics/
-│   ├── __init__.py
-│   ├── fk_tests.py          # Forward kinematics tests (placeholder)
-│   └── ik_tests.py          # Inverse kinematics tests (placeholder)
+sim/
+├── model/
+│   ├── arm_model.py     # Main robot model
+│   ├── robot_params.py  # Robot configuration classes
+│   └── constraints.py   # Constraint and safety checks
 ├── scripts/
-│   ├── __init__.py
-│   ├── manual_control.py    # Mode 1: Interactive joint control
-│   └── automated_demo.py    # Mode 2: Automated movement sequences
-└── tests/
-    ├── __init__.py
-    └── test_arm.py          # Unit tests
+│   ├── view_robot.py        # Interactive 3D viewer + animation
+│   ├── manual_control.py    # Manual slider-driven control
+│   ├── automated_demo.py    # Automated demo trajectory
+│   └── test_arm.py          # Model test script
+└── README.md
 ```
 
 
@@ -194,7 +180,7 @@ simulation/
 ### Running the Viewer
 **Mode 1: Manual Control**
 ```bash
-pipenv run python simulation/scripts/manual_control.py
+pipenv run python sim/scripts/manual_control.py
 ```
 
 Use the sliders to control each joint:
@@ -205,19 +191,19 @@ Use the sliders to control each joint:
 
 **Mode 2: Automated Demo**
 ```bash
-pipenv run python simulation/scripts/automated_demo.py
+pipenv run python sim/scripts/automated_demo.py
 ```
 
 Runs a single comprehensive sequence covering sweeps, reaches, bends, line traces, and joint-only movements that largely hold the end effector in place.
 
 ### Running Tests
 ```bash
-pipenv run python simulation/tests/test_arm.py
+pipenv run python sim/scripts/test_arm.py
 ```
 
 ### Using the Model Programmatically
 ```python
-from simulation.models.three_link_arm import ThreeLinkArm
+from sim.model.arm_model import ThreeLinkArm
 import numpy as np
 
 # Create arm
@@ -243,10 +229,10 @@ arm.move_joint(0, np.pi/4)  # Rotate base 45°
 ## Extending the Model
 
 ### Adding More Joints
-Use the `create_n_link_config()` factory in `config/robot_params.py`:
+Use the `create_n_link_config()` factory in `model/robot_params.py`:
 
 ```python
-from simulation.config.robot_params import create_n_link_config
+from sim.model.robot_params import create_n_link_config
 
 config = create_n_link_config(n_links=5, link_length=2.0)
 ```
@@ -255,7 +241,7 @@ config = create_n_link_config(n_links=5, link_length=2.0)
 Create a custom `RobotConfig`:
 
 ```python
-from simulation.config.robot_params import (
+from sim.model.robot_params import (
     RobotConfig, JointConfig, LinkConfig, JointType
 )
 import numpy as np
@@ -274,10 +260,10 @@ config = RobotConfig(
 ```
 
 ### Adding New Constraints
-Extend the `Constraint` base class in `core/constraints.py`:
+Extend the `Constraint` base class in `model/constraints.py`:
 
 ```python
-from simulation.core.constraints import Constraint, ConstraintType
+from sim.model.constraints import Constraint, ConstraintType
 
 class MyConstraint(Constraint):
     @property

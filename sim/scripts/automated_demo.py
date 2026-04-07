@@ -8,7 +8,7 @@ This script runs a single comprehensive demo that highlights:
 - Joint motion with a mostly fixed end effector
 
 Usage:
-    pipenv run python simulation/scripts/automated_demo.py
+    pipenv run python sim/scripts/automated_demo.py
 
 Author: Senior Design Team
 Date: January 2026
@@ -17,17 +17,16 @@ Date: January 2026
 import sys
 from pathlib import Path
 
-# Add parent directories to path for imports
-_script_dir = Path(__file__).parent
-_sim_dir = _script_dir.parent
-if str(_sim_dir) not in sys.path:
-    sys.path.insert(0, str(_sim_dir))
-
 import numpy as np
 import matplotlib.pyplot as plt
 
-from models.three_link_arm import ThreeLinkArm
-from visualization.view_robot import ArmViewer, TrajectoryAnimator
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_MODEL_DIR = _SCRIPT_DIR.parent / "model"
+if str(_MODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_DIR))
+
+from arm_model import ThreeLinkArm
+from view_robot import ArmViewer, TrajectoryAnimator
 
 
 def get_comprehensive_waypoints():
