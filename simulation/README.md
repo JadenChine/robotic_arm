@@ -29,6 +29,8 @@ A modular Python simulation framework for a 4-DOF robotic arm built using the Ro
 ## Overview
 This simulation models a 3-link serial manipulator with 4 degrees of freedom:
 
+**Units**: All distances are specified in millimeters (mm); angles are in degrees/radians as noted.
+
 **Coordinate System**
 - **Origin**: Robot base at (0, 0, 0)
 - **XY plane**: Ground/base plane (floor plane, the robot is built vertically on top of the ground)
@@ -58,11 +60,11 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 ### Link Specifications
 | Link | Name | Length | Connects | Description |
 |------|------|--------|----------|-------------|
-| Link 1 | Upper Arm | 3.0 units | Shoulder → Elbow 1 | First segment extending from compound shoulder joint |
-| Link 2 | Forearm | 3.0 units | Elbow 1 → Elbow 2 | Middle segment between two elbow joints |
-| Link 3 | Hand/Tool | 3.0 units | Elbow 2 → End Effector | Final segment terminating at end effector |
+| Link 1 | Upper Arm | 101 mm | Shoulder → Elbow 1 | First segment extending from compound shoulder joint |
+| Link 2 | Forearm | 95 mm | Elbow 1 → Elbow 2 | Middle segment between two elbow joints |
+| Link 3 | Hand/Tool | 168 mm | Elbow 2 → End Effector | Final segment terminating at end effector |
 
-**Total Serial Length**: 9.0 units (fully extended reach)
+**Total Serial Length**: 364 mm (fully extended reach)
 
 ### Joint Specifications (Detailed)
 
@@ -96,7 +98,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 #### Joint 3: Elbow 1 Pitch (First Elbow)
 - **Type**: Revolute
 - **Axis of Rotation**: Y-axis (parallel to shoulder pitch axis)
-- **Location**: End of Link 1 (3 units from base along Link 1's direction)
+- **Location**: End of Link 1 (101 mm from base along Link 1's direction)
 - **Range**: -90° to +90° (-π/2 to +π/2 radians)
 - **Home Position**: 0° (Link 2 extends straight along Link 1 direction)
 - **Motion Description**:
@@ -109,7 +111,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 #### Joint 4: Elbow 2 Pitch (Second Elbow)
 - **Type**: Revolute
 - **Axis of Rotation**: Y-axis (parallel to other pitch axes, after base yaw rotation)
-- **Location**: End of Link 2 (6 units from base through Link 1 and Link 2)
+- **Location**: End of Link 2 (196 mm from base through Link 1 and Link 2)
 - **Range**: -90° to +90° (-π/2 to +π/2 radians)
 - **Home Position**: 0° (Link 3 extends straight along Link 2 direction)
 - **Motion Description**:
@@ -131,18 +133,18 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 
 ### Workspace Description
 **Reachable Workspace**:
-- **Shape**: Hemisphere (upper half) in the positive Z plane with a 9 unit radius
-- **Maximum radius**: 9 units (all links fully extended)
-- **Minimum radius**: ~3 units (maximum fold back, limited by joint ranges)
-- **Volume**: Constrained by ground plane (Z ≥ 0 enforced)
+- **Shape**: Hemisphere (upper half) in the positive Z plane with a 364 mm radius
+- **Maximum radius**: 364 mm (all links fully extended)
+- **Minimum radius**: ~101 mm (approximately one link length when fully folded back)
+- **Volume**: Constrained by ground plane (Z ≥ -65 mm enforced)
 
 
 ### Visualization Reference
 **Key Configurations**:
 1. **Home Position** [0°, 0°, 0°, 0°]: Arm vertical, fully extended vertical 
 2. **Vertical Up** [any°, 0°, 0°, 0°]: Arm pointing straight up
-3. **Maximum Reach** [any, 90°, 0°, 0°]: 9 units horizontal (points to +X if yaw is 0°)
-4. **Folded** [0°, 0°, 90°, 90°]: Compact, fully bent forward, end effector at (3,0,0)
+3. **Maximum Reach** [any, 90°, 0°, 0°]: ~364 mm horizontal (points to +X if yaw is 0°)
+4. **Folded** [0°, 0°, 80°, 80°]: Compact forward bend, end effector roughly (151, 0, -41) mm (stays above the -65 mm floor limit)
 
 
 ## Constraints
@@ -151,10 +153,10 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 Each joint has enforced limits. The `set_joint_angles()` method automatically clamps values.
 
 ### Ground Collision
-The arm is prevented from going below the XY plane (Z < 0). The constraint system detects when any joint or the end effector would penetrate the ground plane.
+The arm is prevented from going below Z = -65 mm. The constraint system detects when any joint or the end effector would penetrate this lowered ground plane (allowing 65 mm of clearance below the XY plane).
 
 ### Workspace
-The maximum workspace is a hemisphere of radius 9 units centered at the origin.
+The maximum workspace is a hemisphere of radius 364 mm centered at the origin, offset by the -65 mm floor limit.
 
 
 ## Project Structure
@@ -206,11 +208,7 @@ Use the sliders to control each joint:
 pipenv run python simulation/scripts/automated_demo.py
 ```
 
-Choose from multiple demo modes:
-- `basic`: Range of motion demonstration
-- `sweep`: Workspace coverage sweep
-- `reach`: Maximum reach test
-- `pick_place`: Simulated pick-and-place
+Runs a single comprehensive sequence covering sweeps, reaches, bends, line traces, and joint-only movements that largely hold the end effector in place.
 
 ### Running Tests
 ```bash

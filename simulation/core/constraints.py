@@ -224,14 +224,14 @@ class GroundCollisionConstraint(Constraint):
     
     def __init__(
         self, 
-        ground_z: float = 0.0,
+        ground_z: float = -65.0,
         severity: ConstraintSeverity = ConstraintSeverity.CRITICAL
     ):
         """
         Initialize ground collision constraint.
         
         Args:
-            ground_z: Z-coordinate of the ground plane
+            ground_z: Z-coordinate of the ground plane (mm)
             severity: Severity level for violations
         """
         self._ground_z = ground_z
@@ -262,7 +262,7 @@ class GroundCollisionConstraint(Constraint):
                 violations.append(ConstraintViolation(
                     constraint_type=self.constraint_type,
                     severity=self._severity,
-                    message=f"{name} below ground: z={pos[2]:.3f} < {self._ground_z}",
+                    message=f"{name} below ground: z={pos[2]:.3f} mm < {self._ground_z} mm",
                     value=pos[2],
                     limit=self._ground_z
                 ))
@@ -464,8 +464,8 @@ class ConstraintManager:
 def create_default_constraint_manager(
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
-    ground_z: float = 0.0,
-    max_reach: float = 10.0
+    ground_z: float = -65.0,
+    max_reach: float = 400.0
 ) -> ConstraintManager:
     """
     Create a constraint manager with default constraints for a typical arm.
@@ -473,8 +473,8 @@ def create_default_constraint_manager(
     Args:
         lower_limits: Joint lower limits
         upper_limits: Joint upper limits
-        ground_z: Ground plane Z coordinate
-        max_reach: Maximum workspace radius
+        ground_z: Ground plane Z coordinate (mm)
+        max_reach: Maximum workspace radius (mm)
         
     Returns:
         Configured ConstraintManager

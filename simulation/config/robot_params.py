@@ -2,7 +2,7 @@
 Robot Parameters Configuration Module
 
 This module defines the data classes and default configurations for robotic arms.
-All measurements are in standard SI units (meters, radians) unless otherwise specified.
+All measurements are in millimeters (mm) and radians unless otherwise specified.
 
 The configuration is designed to be:
 - Easily extensible for additional joints
@@ -34,10 +34,10 @@ class JointConfig:
         name: Human-readable identifier for the joint
         joint_type: Type of joint (revolute or prismatic)
         axis: Axis of rotation/translation ('x', 'y', 'z')
-        limit_lower: Lower limit in radians (revolute) or meters (prismatic)
-        limit_upper: Upper limit in radians (revolute) or meters (prismatic)
+        limit_lower: Lower limit in radians (revolute) or millimeters (prismatic)
+        limit_upper: Upper limit in radians (revolute) or millimeters (prismatic)
         home_position: Default/home position of the joint
-        max_velocity: Maximum angular/linear velocity (rad/s or m/s)
+        max_velocity: Maximum angular/linear velocity (rad/s or mm/s)
         description: Optional description of joint function
     """
     name: str
@@ -79,10 +79,10 @@ class LinkConfig:
     
     Attributes:
         name: Human-readable identifier for the link
-        length: Length of the link in meters (or units)
-        offset_d: DH parameter d - offset along previous z-axis
-        offset_a: DH parameter a - offset along rotated x-axis  
-        twist_alpha: DH parameter alpha - rotation about x-axis
+        length: Length of the link in millimeters
+        offset_d: DH parameter d - offset along previous z-axis (mm)
+        offset_a: DH parameter a - offset along rotated x-axis (mm)  
+        twist_alpha: DH parameter alpha - rotation about x-axis (radians)
         mass: Mass of the link (for dynamics, optional)
         description: Optional description of link function
     """
@@ -112,15 +112,15 @@ class RobotConfig:
         name: Robot identifier
         joints: List of joint configurations
         links: List of link configurations
-        base_position: Position of robot base in world frame (x, y, z)
-        ground_plane_z: Z-coordinate of ground plane (constraint boundary)
+        base_position: Position of robot base in world frame (x, y, z) in mm
+        ground_plane_z: Z-coordinate of ground plane (constraint boundary) in mm
         enable_ground_collision: Whether to enforce ground collision avoidance
     """
     name: str
     joints: List[JointConfig]
     links: List[LinkConfig]
     base_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    ground_plane_z: float = 0.0
+    ground_plane_z: float = -65.0
     enable_ground_collision: bool = True
     
     def __post_init__(self):
@@ -185,7 +185,7 @@ class RobotConfig:
 # - Joint 4 (Elbow 2): Second elbow, rotation about Y-axis, ±90° range
 #
 # The shoulder is a compound joint (joints 1 & 2 together)
-# Links: 3 units each, total reach 9 units
+# Links: 101, 95, and 168 mm, total reach 364 mm
 
 DEFAULT_3_LINK_CONFIG = RobotConfig(
     name="3-Link Arm",
@@ -234,29 +234,29 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
     links=[
         LinkConfig(
             name="link_1",
-            length=3.0,
+            length=101.0,
             description="Upper arm - connects shoulder to first elbow"
         ),
         LinkConfig(
             name="link_2", 
-            length=3.0,
+            length=95.0,
             description="Forearm - connects first elbow to second elbow"
         ),
         LinkConfig(
             name="link_3",
-            length=3.0,
+            length=168.0,
             description="Hand/end effector link - connects second elbow to end effector"
         ),
     ],
     base_position=(0.0, 0.0, 0.0),
-    ground_plane_z=0.0,
+    ground_plane_z=-65.0,
     enable_ground_collision=True
 )
 
 
 def create_n_link_config(
     n_links: int,
-    link_length: float = 3.0,
+    link_length: float = 100.0,
     name: str = "N-Link Arm"
 ) -> RobotConfig:
     """
@@ -269,7 +269,7 @@ def create_n_link_config(
     
     Args:
         n_links: Number of links (and joints)
-        link_length: Length of each link
+        link_length: Length of each link in millimeters
         name: Name for the robot configuration
         
     Returns:
