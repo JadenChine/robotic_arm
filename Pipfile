@@ -7,6 +7,7 @@ name = "pypi"
 numpy = "<2.0"
 matplotlib = "*"
 roboticstoolbox-python = "*"
+pyserial = "*"
 
 [dev-packages]
 

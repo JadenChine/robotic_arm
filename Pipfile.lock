@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "762c92b4d0daa6451b4a4a03ca5a64fe885f90020d02726bf2f42c75d9caa2f2"
+            "sha256": "3bfc25131b3d4736ead6724346e747dd1e7b26ded18cdcf6f259ab08cb7ca27c"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -569,6 +569,14 @@
             ],
             "markers": "python_version >= '3.9'",
             "version": "==3.3.2"
+        },
+        "pyserial": {
+            "hashes": [
+                "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb",
+                "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
+            ],
+            "index": "pypi",
+            "version": "==3.5"
         },
         "python-dateutil": {
             "hashes": [
