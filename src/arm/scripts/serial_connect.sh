@@ -6,7 +6,7 @@ sleep 1
 echo "Searching for Pico USB device..."
 
 shopt -s nullglob
-devices=(/dev/tty.usbmodem*)
+devices=(/dev/ttyACM* /dev/ttyUSB* /dev/tty.usbmodem*)
 shopt -u nullglob
 
 if [[ ${#devices[@]} -eq 0 ]]; then
@@ -24,7 +24,8 @@ echo
 if command -v pipenv >/dev/null 2>&1; then
     PYTHON_CMD=(pipenv run python)
 else
-    echo "Warning: pipenv not found"
+    echo "Warning: pipenv not found, falling back to python3"
+    PYTHON_CMD=(python3)
 fi
 
 DEVICE="${DEVICE}" "${PYTHON_CMD[@]}" - <<'PY'

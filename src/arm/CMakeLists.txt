@@ -25,11 +25,12 @@ pico_sdk_init()
 
 # Collect project source files:
 # - main.c at the project root
-# - all .c files inside src/
+# - all C/C++ files inside src/
 # CONFIGURE_DEPENDS tells CMake to re-check this glob when files are added/removed.
-file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/main.c"
     "${CMAKE_CURRENT_LIST_DIR}/src/*.c"
+    "${CMAKE_CURRENT_LIST_DIR}/src/*.cpp"
 )
 
 # Create the firmware executable from the collected source files.
@@ -43,6 +44,7 @@ add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 # Link required Pico libraries.
 target_link_libraries(${PROJECT_NAME}
     pico_stdlib
+    hardware_uart
 )
 
 # Add include directories used by this target.
