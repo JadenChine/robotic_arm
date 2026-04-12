@@ -2,11 +2,13 @@
 
 set -euo pipefail
 
+BAUD="${BAUD:-115200}"
+
 sleep 1
 echo "Searching for Pico USB device..."
 
 shopt -s nullglob
-devices=(/dev/ttyACM* /dev/ttyUSB* /dev/tty.usbmodem*)
+devices=(/dev/cu.usbmodem* /dev/tty.usbmodem* /dev/ttyACM* /dev/ttyUSB*)
 shopt -u nullglob
 
 if [[ ${#devices[@]} -eq 0 ]]; then
@@ -17,44 +19,29 @@ fi
 
 DEVICE="${devices[0]}"
 echo "Found device: ${DEVICE}"
-echo "Connecting to Pico serial monitor..."
-echo "Press Ctrl+C to exit"
+echo "Opening picocom serial monitor..."
+echo "Baud: ${BAUD}"
+echo "Press Ctrl+A then Ctrl+X to exit"
 echo
 
-if command -v pipenv >/dev/null 2>&1; then
-    PYTHON_CMD=(pipenv run python)
-else
-    echo "Warning: pipenv not found, falling back to python3"
-    PYTHON_CMD=(python3)
+if ! command -v picocom >/dev/null 2>&1; then
+    echo "Error: picocom is not installed"
+    echo "Install it with: brew install picocom"
+    exit 1
 fi
 
-DEVICE="${DEVICE}" "${PYTHON_CMD[@]}" - <<'PY'
-import os
-import sys
+# Keep terminal settings sane before launching picocom.
+if [[ -e /dev/tty ]]; then
+    stty sane </dev/tty 2>/dev/null || true
+fi
 
-try:
-    import serial
-except ImportError:
-    print("Error: pyserial is required for serial_connect.sh")
-    print("Install it with: pipenv install pyserial")
-    sys.exit(1)
-
-
-device = os.environ["DEVICE"]
-
-try:
-    ser = serial.Serial(device, 115200, timeout=0.1)
-    print("Connected! Reading output...\n", flush=True)
-    while True:
-        waiting = ser.in_waiting
-        if waiting:
-            data = ser.read(waiting)
-            sys.stdout.buffer.write(data)
-            sys.stdout.flush()
-except KeyboardInterrupt:
-    print("\n\nDisconnected")
-    sys.exit(0)
-except Exception as exc:
-    print(f"\nError: {exc}")
-    sys.exit(1)
-PY
+# Picocom provides two-way serial I/O. Use CRLF and delete/backspace mappings for smoother typing.
+exec picocom \
+    --baud "${BAUD}" \
+    --flow n \
+    --parity n \
+    --databits 8 \
+    --stopbits 1 \
+    --emap crcrlf,delbs \
+    --omap crcrlf \
+    "${DEVICE}"

@@ -80,20 +80,17 @@ static void handle_command(int ch, const servo_bus_config_t* config, float* targ
 			break;
 		case 'c':
 			*target_degrees = 0.0f;
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees,
-			                               config->default_move_time_ms);
+			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
 			printf("move center: %s\n", status_to_string(status));
 			break;
 		case 'a':
 			*target_degrees = clamp_demo_degrees(*target_degrees - config->default_step_degrees);
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees,
-			                               config->default_move_time_ms);
+			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
 			printf("move %.1f deg: %s\n", *target_degrees, status_to_string(status));
 			break;
 		case 'd':
 			*target_degrees = clamp_demo_degrees(*target_degrees + config->default_step_degrees);
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees,
-			                               config->default_move_time_ms);
+			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
 			printf("move %.1f deg: %s\n", *target_degrees, status_to_string(status));
 			break;
 		case 's':
