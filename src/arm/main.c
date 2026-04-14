@@ -7,6 +7,16 @@
 #include "pico/time.h"
 #include "platform/servo_platform_config.h"
 
+#define SMOKE_TEST_MIN_SERVO_ID 1u
+#define SMOKE_TEST_MAX_SERVO_ID 6u
+
+static uint8_t clamp_active_servo_id(uint8_t servo_id) {
+	if (servo_id < SMOKE_TEST_MIN_SERVO_ID || servo_id > SMOKE_TEST_MAX_SERVO_ID) {
+		return SMOKE_TEST_MIN_SERVO_ID;
+	}
+	return servo_id;
+}
+
 static const char* status_to_string(servo_bus_status_t status) {
 	switch (status) {
 		case SERVO_BUS_STATUS_OK:
@@ -19,9 +29,21 @@ static const char* status_to_string(servo_bus_status_t status) {
 			return "timeout";
 		case SERVO_BUS_STATUS_ERROR_OVERFLOW:
 			return "overflow";
+		case SERVO_BUS_STATUS_ERROR_UNSUPPORTED:
+			return "unsupported";
 		case SERVO_BUS_STATUS_ERROR_PROTOCOL:
 		default:
 			return "protocol error";
+	}
+}
+
+static const char* backend_to_string(servo_bus_backend_t backend) {
+	switch (backend) {
+		case SERVO_BUS_BACKEND_DIRECT_SERVO:
+			return "direct servo protocol";
+		case SERVO_BUS_BACKEND_XARM_CONTROLLER:
+		default:
+			return "xArm controller protocol";
 	}
 }
 
@@ -35,23 +57,31 @@ static float clamp_demo_degrees(float degrees) {
 	return degrees;
 }
 
-static void print_help(void) {
+static void print_help(const servo_bus_config_t* config, uint8_t active_servo_id) {
 	printf("\nCommands:\n");
 	printf("  h or ? : print help\n");
-	printf("  p      : ping servo 1\n");
-	printf("  c      : move servo 1 to center (0 deg)\n");
+	printf("  1..6   : select active servo ID (current: %u)\n", active_servo_id);
+	printf("  p      : ping active servo (position read probe)\n");
+	printf("  c      : move active servo to center (0 deg)\n");
 	printf("  a      : step left by configured increment\n");
 	printf("  d      : step right by configured increment\n");
-	printf("  s      : stop servo 1\n");
-	printf("  r      : read servo 1 position\n");
-	printf("  v      : read servo 1 voltage\n");
-	printf("  t      : read servo 1 temperature\n");
+	printf("  s      : stop/unload active servo\n");
+	printf("  r      : read active servo position\n");
+	if (config->backend == SERVO_BUS_BACKEND_XARM_CONTROLLER) {
+		printf("  v      : read controller battery voltage\n");
+		printf("  t      : read active servo temperature (unsupported in this mode)\n");
+	} else {
+		printf("  v      : read active servo voltage\n");
+		printf("  t      : read active servo temperature\n");
+	}
 	printf("  e      : print last driver error\n");
 }
 
-static void print_banner(const servo_bus_config_t* config) {
+static void print_banner(const servo_bus_config_t* config, uint8_t active_servo_id) {
 	printf("\nHiWonder Servo Smoke Test\n");
-	printf("  Servo ID     : %u\n", config->default_servo_id);
+	printf("  Backend      : %s\n", backend_to_string(config->backend));
+	printf("  Active servo : %u\n", active_servo_id);
+	printf("  Select range : %u-%u\n", SMOKE_TEST_MIN_SERVO_ID, SMOKE_TEST_MAX_SERVO_ID);
 	printf("  UART index   : %u\n", config->uart_index);
 	printf("  UART baud    : %lu\n", (unsigned long)config->baud_rate);
 	printf("  UART TX pin  : %u\n", config->tx_pin);
@@ -59,67 +89,84 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Move time ms : %u\n", config->default_move_time_ms);
 	printf("  Step degrees : %.1f\n", config->default_step_degrees);
 	printf("  Heartbeat LED: %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
-	print_help();
+	print_help(config, active_servo_id);
 }
 
-static void handle_command(int ch, const servo_bus_config_t* config, float* target_degrees) {
+static void handle_command(int ch, const servo_bus_config_t* config, uint8_t* active_servo_id,
+				   float* target_degrees_by_id) {
 	servo_bus_status_t status = SERVO_BUS_STATUS_OK;
 	float degrees = 0.0f;
 	int16_t raw_position = 0;
 	int16_t voltage_mv = 0;
 	int8_t temperature_c = 0;
+	const uint8_t servo_id = *active_servo_id;
+	float* target_degrees = &target_degrees_by_id[servo_id];
 
 	switch (ch) {
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+			*active_servo_id = (uint8_t)(ch - '0');
+			printf("active servo set to ID %u\n", *active_servo_id);
+			break;
 		case 'h':
 		case '?':
-			print_help();
+			print_help(config, *active_servo_id);
 			break;
 		case 'p':
-			status = servo_bus_ping(config->default_servo_id);
-			printf("ping: %s\n", status_to_string(status));
+			status = servo_bus_ping(servo_id);
+			printf("ping servo %u: %s\n", servo_id, status_to_string(status));
 			break;
 		case 'c':
 			*target_degrees = 0.0f;
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
-			printf("move center: %s\n", status_to_string(status));
+			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
+			printf("servo %u move center: %s\n", servo_id, status_to_string(status));
 			break;
 		case 'a':
 			*target_degrees = clamp_demo_degrees(*target_degrees - config->default_step_degrees);
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
-			printf("move %.1f deg: %s\n", *target_degrees, status_to_string(status));
+			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
+			printf("servo %u move %.1f deg: %s\n", servo_id, *target_degrees, status_to_string(status));
 			break;
 		case 'd':
 			*target_degrees = clamp_demo_degrees(*target_degrees + config->default_step_degrees);
-			status = servo_bus_move_degrees(config->default_servo_id, *target_degrees, config->default_move_time_ms);
-			printf("move %.1f deg: %s\n", *target_degrees, status_to_string(status));
+			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
+			printf("servo %u move %.1f deg: %s\n", servo_id, *target_degrees, status_to_string(status));
 			break;
 		case 's':
-			status = servo_bus_stop(config->default_servo_id);
-			printf("stop: %s\n", status_to_string(status));
+			status = servo_bus_stop(servo_id);
+			printf("servo %u stop/unload: %s\n", servo_id, status_to_string(status));
 			break;
 		case 'r':
-			status = servo_bus_get_position_degrees(config->default_servo_id, &degrees);
+			status = servo_bus_get_position_degrees(servo_id, &degrees);
 			if (status == SERVO_BUS_STATUS_OK) {
-				(void)servo_bus_get_position_raw(config->default_servo_id, &raw_position);
-				printf("position: %.2f deg (raw %d)\n", degrees, raw_position);
+				(void)servo_bus_get_position_raw(servo_id, &raw_position);
+				*target_degrees = clamp_demo_degrees(degrees);
+				printf("servo %u position: %.2f deg (raw %d)\n", servo_id, degrees, raw_position);
 			} else {
-				printf("position read: %s\n", status_to_string(status));
+				printf("servo %u position read: %s\n", servo_id, status_to_string(status));
 			}
 			break;
 		case 'v':
-			status = servo_bus_get_voltage(config->default_servo_id, &voltage_mv);
+			status = servo_bus_get_voltage(servo_id, &voltage_mv);
 			if (status == SERVO_BUS_STATUS_OK) {
-				printf("voltage: %d mV\n", voltage_mv);
+				if (config->backend == SERVO_BUS_BACKEND_XARM_CONTROLLER) {
+					printf("controller battery voltage: %d mV\n", voltage_mv);
+				} else {
+					printf("servo %u voltage: %d mV\n", servo_id, voltage_mv);
+				}
 			} else {
-				printf("voltage read: %s\n", status_to_string(status));
+				printf("servo %u voltage read: %s\n", servo_id, status_to_string(status));
 			}
 			break;
 		case 't':
-			status = servo_bus_get_temperature(config->default_servo_id, &temperature_c);
+			status = servo_bus_get_temperature(servo_id, &temperature_c);
 			if (status == SERVO_BUS_STATUS_OK) {
-				printf("temperature: %d C\n", temperature_c);
+				printf("servo %u temperature: %d C\n", servo_id, temperature_c);
 			} else {
-				printf("temperature read: %s\n", status_to_string(status));
+				printf("servo %u temperature read: %s\n", servo_id, status_to_string(status));
 			}
 			break;
 		case 'e':
@@ -130,7 +177,7 @@ static void handle_command(int ch, const servo_bus_config_t* config, float* targ
 			break;
 		default:
 			printf("unknown command '%c'\n", ch);
-			print_help();
+			print_help(config, *active_servo_id);
 			break;
 	}
 }
@@ -139,7 +186,8 @@ int main(void) {
 	servo_bus_config_t config;
 	uint32_t last_heartbeat_ms;
 	bool led_on = false;
-	float target_degrees = 0.0f;
+	uint8_t active_servo_id = SMOKE_TEST_MIN_SERVO_ID;
+	float target_degrees_by_id[SMOKE_TEST_MAX_SERVO_ID + 1] = {0.0f};
 
 	stdio_init_all();
 	sleep_ms(1500);
@@ -149,7 +197,12 @@ int main(void) {
 	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, 0);
 
 	servo_bus_get_default_config(&config);
-	print_banner(&config);
+	active_servo_id = clamp_active_servo_id(config.default_servo_id);
+	if (config.default_servo_id != active_servo_id) {
+		printf("default servo ID %u outside smoke-test range, using %u\n",
+				config.default_servo_id, active_servo_id);
+	}
+	print_banner(&config, active_servo_id);
 
 	printf("initializing servo bus... ");
 	servo_bus_status_t init_status = servo_bus_init(&config);
@@ -166,8 +219,8 @@ int main(void) {
 		}
 
 		int ch = getchar_timeout_us(0);
-		if (ch != PICO_ERROR_TIMEOUT) {
-			handle_command(ch, &config, &target_degrees);
+		if (ch >= 0) {
+			handle_command(ch, &config, &active_servo_id, target_degrees_by_id);
 		}
 
 		tight_loop_contents();

@@ -1,204 +1,286 @@
-# Arm Servo Driver Bootstrap Goal
+# Arm Firmware Reference
 
 ## Purpose
 
-This file is the persistent continuity document for the low-level servo control bootstrap work in `src/arm/`.
+This document is the primary technical reference for the Pico firmware in src/arm.
 
-Its job is to preserve the important project context, design decisions, implementation plan, execution notes, and environment blockers so the work can continue in a later chat session or by another contributor without depending on chat history.
+It explains:
 
-This file is intentionally practical. It should capture actionable rationale and project decisions, not hidden internal reasoning.
+- what this firmware controls,
+- how the protocol backends are structured,
+- how to build/flash/test,
+- and where to make changes safely.
 
-## User Intent
+The goal is to keep this file evergreen: accurate, practical, and focused on implementation reality.
 
-- Port the HiWonder intelligent bus servo functionality into the robotic arm firmware under `src/arm/`.
-- Do not keep `src/HiBusServo/` as a long-term dependency in the arm firmware. That repository is reference material only.
-- Refactor the serial integration so it works cleanly on Raspberry Pi Pico using Pico SDK.
-- Overwrite the existing `src/arm/main.c`, but keep the blinking indicator so firmware liveness remains obvious.
-- Provide a simple first-stage interface that lets a host computer keyboard control one connected servo with ID `1`.
-- Bring over the full low-level functionality for future use, even though the first demo only exercises a small subset.
-- Structure the result so it becomes the base of a hardware abstraction layer for a larger robotic arm controller.
+## What This Firmware Does
 
-## What Was Determined In Planning
+The firmware provides a C HAL and an interactive smoke test for controlling bus servos from a Raspberry Pi Pico.
 
-### Chosen architecture
+Two UART protocol backends are supported:
 
-The implementation should use three layers:
+1. Direct smart-servo protocol
+2. xArm controller-board protocol
 
-1. `platform/`
-	 Owns Pico-specific UART and timing integration.
-2. `drivers/`
-	 Owns the HiWonder packet protocol and full servo feature set.
-3. `hal/`
-	 Exposes a stable C-facing API for the rest of the arm firmware.
+Current default behavior targets xArm controller boards (for example xArm v1.6):
 
-This keeps the protocol implementation reusable and keeps future arm logic from depending on packet details or C++ types.
+- backend: controller mode
+- bus baud rate: 9600
+- Pico UART pins: GP0 TX, GP1 RX
 
-### Language boundary
+## Current Verified Setup
 
-- Internal driver code may remain C++ where it is the most direct fit.
-- Public arm-facing HAL should remain C-friendly.
-- `main.c` should stay in C and talk only to the HAL.
+The currently validated hardware path is:
 
-### Demo scope
+- Pico UART -> xArm bus-servo controller board UART
+- controller board -> daisy-chained servos
 
-The first keyboard-driven smoke test should stay intentionally small:
+Known-good usage includes selecting and controlling any of six servos in the smoke test, including selecting servo ID 1 (end of chain).
 
-- print help
-- ping servo `1`
-- move to center
-- step left
-- step right
-- stop motion
-- read position
-- read voltage
-- read temperature
-- print last error
+## Architecture
 
-This is enough to prove the bus path, command loop, and telemetry path without prematurely designing a full motion console.
+### 1) Platform Layer
 
-### Hardware direction
+Path: src/arm/src/platform
 
-- USB stdio is used for the host keyboard console.
-- A dedicated hardware UART is used for the servo bus.
-- The initial firmware should keep the current heartbeat LED behavior while expanding into an interactive test application.
-- Default UART wiring should be centralized in one config header so rewiring only requires one edit.
+Responsibilities:
 
-## Reference Material
+- Pico UART initialization and I/O
+- timing source access (millis)
+- hardware default values (UART index, pins, baud)
 
-These files were inspected and are the behavior reference for the port:
+Key files:
 
-- `src/HiBusServo/README.md`
-- `src/HiBusServo/src/HiBusServo.h`
-- `src/HiBusServo/src/HiBusServo.cpp`
+- src/arm/src/platform/pico_uart_transport.hpp
+- src/arm/src/platform/pico_uart_transport.cpp
+- src/arm/src/platform/servo_platform_config.h
 
-Important facts from the reference library:
+### 2) Driver Layer
 
-- Packet format is `0x55 0x55 ID LENGTH COMMAND DATA... CHECKSUM`.
-- The implementation is synchronous and blocking.
-- Response timeout is `20 ms`.
-- The original code depends on Arduino concepts such as `HardwareSerial`, `Arduino.h`, `millis()`, `constrain()`, `lowByte()`, `highByte()`, and `word()`.
-- The reference code already includes more than the minimum demo features, including movement, wait moves, broadcast operations, ID management, telemetry, limits, mode switching, load control, and LED control.
+Path: src/arm/src/drivers
 
-## Scope
+Responsibilities:
 
-### In scope
+- packet encode/decode
+- command/response parsing
+- protocol-specific command mapping
 
-- Copy the reference driver behavior into arm-owned source files.
-- Remove Arduino dependencies.
-- Add Pico UART transport.
-- Add a C HAL boundary.
-- Replace `main.c` with a heartbeat-plus-console smoke test.
-- Update Linux host serial tooling.
-- Document build, flash, and test flow.
-- Keep this file updated with progress and blockers.
+Implemented drivers:
 
-### Out of scope for this bootstrap
+1. Direct smart-servo driver
+- files:
+  - src/arm/src/drivers/servo_bus_driver.hpp
+  - src/arm/src/drivers/servo_bus_driver.cpp
+- framing:
+  - 0x55 0x55 ID LEN CMD DATA... CHECKSUM
+- target:
+  - direct servo bus communication
 
-- inverse kinematics
-- multi-joint coordinated motion
-- wireless transport
-- web/mobile interface integration
-- the higher-level unified command protocol described in `Design_Doc.md`
+2. xArm controller driver
+- files:
+  - src/arm/src/drivers/xarm_controller_driver.hpp
+  - src/arm/src/drivers/xarm_controller_driver.cpp
+- framing:
+  - 0x55 0x55 LEN CMD PARAMS...
+- no checksum byte
+- target:
+  - Pico connected to controller board UART
 
-## Implementation Structure
+### 3) HAL Layer
 
-Recommended arm-owned layout:
+Path: src/arm/src/hal
 
-- `src/arm/src/platform/`
-	Pico UART transport and hardware defaults.
-- `src/arm/src/drivers/`
-	Internal servo protocol implementation.
-- `src/arm/src/hal/`
-	Stable C-facing servo API.
-- `src/arm/main.c`
-	Minimal interactive smoke test and heartbeat loop.
+Responsibilities:
 
-## Execution Order
+- stable C API for arm application code
+- backend-agnostic entry points
+- backend routing and status mapping
 
-1. Initialize the Pico SDK submodule and establish the build baseline.
-2. Create this continuity file and keep it current.
-3. Scaffold the platform, driver, and HAL directories.
-4. Port the reference servo driver into arm-owned files.
-5. Implement the Pico UART transport.
-6. Expose a C-facing HAL.
-7. Update CMake for the mixed C/C++ build.
-8. Replace `main.c` with the console-driven smoke test.
-9. Update serial tooling and README instructions.
-10. Validate build, firmware startup, LED heartbeat, servo control, telemetry, and timeout behavior.
+Key files:
 
-## Verification Requirements
+- src/arm/src/hal/servo_bus.h
+- src/arm/src/hal/servo_bus.cpp
 
-- Firmware should build once a valid Pico toolchain is installed.
-- LED heartbeat must remain active.
-- USB serial console must accept host keyboard input.
-- Servo ID `1` must respond to ping and move commands.
-- Position, voltage, and temperature reads must work when hardware is connected.
-- Timeout and disconnect cases must not hang the main loop.
-- The public HAL must remain usable from C without exposing C++ types.
-- This file must remain sufficient for a future session to resume the work.
+Important HAL concepts:
 
-## Environment Findings And Blockers
+- backend selection via servo_bus_backend_t
+- config object includes backend + UART settings
+- unsupported operations return SERVO_BUS_STATUS_ERROR_UNSUPPORTED
 
-### Repository state at implementation start
+### 4) Application Layer
 
-- Branch in use: `feature/initial_servo_control`
-- `src/HiBusServo/` is currently present as reference material and is untracked.
-- `src/arm/goal.md` existed but was empty.
+Path: src/arm/main.c
 
-### Build environment findings
+Responsibilities:
 
-- `src/pico-sdk/` was initially empty.
-- The Pico SDK submodule has now been initialized.
-- The current machine does not have a working Pico cross-compilation environment yet.
+- heartbeat LED liveness loop
+- USB serial command interface for bench validation
+- quick protocol and wiring validation without higher-level planners
 
-Observed blocking issues during baseline build:
+## Backend Comparison
 
-- `arm-none-eabi-gcc` not found
-- build generator not configured on this machine during CMake configure
+### Direct Servo Backend
 
-Implication:
+Use when Pico talks to servo bus directly (with appropriate electrical interface).
 
-Code implementation can proceed, but final compile validation must wait until a Pico toolchain and generator are installed or configured.
+- default direct baud: 115200
+- supports rich per-servo smart-servo features
+- packet includes ID and checksum
 
-## Decisions Made So Far
+### Controller Backend
 
-- Keep `src/HiBusServo/` as reference material only.
-- Preserve the full low-level servo feature set in the imported arm-owned driver.
-- Use a pure C HAL over an internal Pico-adapted C++ driver.
-- Keep USB stdio for the operator console and hardware UART for the servo bus.
-- Keep the heartbeat LED in the new `main.c`.
-- Start with a narrow smoke test, not a complex command shell.
+Use when Pico talks to a HiWonder/xArm controller board that then drives servos.
 
-## Resume Instructions
+- default controller baud: 9600
+- packet excludes dedicated ID field and checksum
+- command set matches controller protocol documentation
+- some direct-servo features are intentionally unsupported in this mode
 
-If work resumes in a later session, start here:
+## Default Configuration
 
-1. Read this file first.
-2. Check the current implementation files under `src/arm/src/`.
-3. Verify whether the Pico toolchain has been installed.
-4. Build the firmware before changing behavior if the toolchain is available.
-5. Continue the next incomplete item from the execution log below.
+Defaults are defined in src/arm/src/platform/servo_platform_config.h.
 
-## Execution Log
+Current defaults:
 
-### 2026-04-07
+- SERVO_BUS_DEFAULT_BACKEND = controller mode
+- SERVO_BUS_DEFAULT_UART_INDEX = 0
+- SERVO_BUS_DEFAULT_TX_PIN = 0 (GP0)
+- SERVO_BUS_DEFAULT_RX_PIN = 1 (GP1)
+- SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE = 9600
+- SERVO_BUS_DIRECT_DEFAULT_BAUD_RATE = 115200
 
-- Explored `src/HiBusServo/` to understand the driver architecture and serial assumptions.
-- Explored `src/arm/` to confirm the project is a Pico SDK firmware with a blink-only `main.c`.
-- Determined the correct long-term boundary is a C HAL over an internal Pico-adapted driver.
-- Decided the first demo should use USB serial keyboard control for servo ID `1`.
-- Initialized the `src/pico-sdk` submodule.
-- Attempted a baseline build and confirmed the environment is blocked by missing `arm-none-eabi-gcc` and an incomplete local build-tool setup.
-- Added arm-owned platform defaults, Pico UART transport, internal servo bus driver, and a broad C-facing HAL under `src/arm/src/`.
-- Replaced `src/arm/main.c` with a heartbeat-driven USB serial smoke test for servo ID `1`.
-- Updated the host serial helper to search Linux device paths in addition to macOS-style names.
-- Updated the project README with the initial servo bootstrap workflow and default hardware assumptions.
-- Full firmware build and hardware validation remain blocked on the missing Pico cross-toolchain in the current environment.
+## Smoke Test Console (main.c)
 
-## Next Intended Steps
+The smoke test is intentionally keyboard-driven and minimal.
 
-- Install or point CMake to a working Pico toolchain with `arm-none-eabi-gcc` and a generator such as `ninja`.
-- Configure and build `src/arm/` on a machine with that toolchain available.
-- Flash the Pico and verify USB serial console startup, heartbeat LED behavior, and command handling.
-- Connect the HiWonder bus controller and validate ping, movement, position, voltage, and temperature reads against servo ID `1`.
-- Adjust UART defaults in `src/arm/src/platform/servo_platform_config.h` if the final board wiring differs from the current default assumptions.
+Command set:
+
+- h or ? : show help
+- 1..6 : select active servo ID
+- p : ping active servo
+- c : move active servo to center
+- a : step left
+- d : step right
+- s : stop/unload active servo
+- r : read active servo position
+- v : voltage read
+  - controller mode: controller battery voltage
+  - direct mode: servo voltage
+- t : temperature read
+  - controller mode: unsupported (clean status)
+  - direct mode: servo temperature
+- e : print last driver error
+
+Behavior notes:
+
+- active servo selection persists until changed
+- each servo keeps its own tracked target angle for stepping behavior
+- heartbeat LED continues regardless of command success/failure
+
+## Build and Flash
+
+Project root for firmware:
+
+- src/arm
+
+Typical flow:
+
+1. Configure (first time):
+
+```bash
+cmake -S src/arm -B src/arm/build
+```
+
+2. Build and flash:
+
+```bash
+cd src/arm
+./scripts/build_and_flash.sh
+```
+
+3. Build, flash, and auto-connect serial monitor:
+
+```bash
+cd src/arm
+./scripts/build_and_flash.sh --connect
+```
+
+Notes:
+
+- scripts/build_and_flash.sh expects picotool
+- scripts/serial_connect.sh expects picocom
+
+## Wiring Guidance
+
+For controller backend (default):
+
+- Pico GP0 (TX) -> controller RX
+- Pico GP1 (RX) -> controller TX
+- Pico GND -> controller GND
+
+Also verify:
+
+- voltage-level compatibility on controller TX line into Pico RX
+- shared ground is present
+- controller and servo power are stable
+
+## File Map
+
+Top-level firmware files and folders:
+
+- src/arm/CMakeLists.txt
+- src/arm/main.c
+- src/arm/scripts/build_and_flash.sh
+- src/arm/scripts/serial_connect.sh
+- src/arm/src/platform/
+- src/arm/src/drivers/
+- src/arm/src/hal/
+
+## Design Rules for Future Changes
+
+1. Keep protocol parsing in drivers, not in HAL or main.c.
+2. Keep HAL C-facing and backend-neutral.
+3. Preserve both backends unless intentionally removed.
+4. Add new protocol features to the correct driver first, then map through HAL.
+5. Keep smoke test simple and focused on bring-up/diagnostics.
+
+## Known Limitations
+
+In controller backend mode:
+
+- not all direct-servo telemetry/control functions exist
+- unsupported HAL calls return SERVO_BUS_STATUS_ERROR_UNSUPPORTED by design
+
+This is expected behavior, not a failure.
+
+## Quick Troubleshooting
+
+If servos do not respond:
+
+1. Confirm backend is controller mode when using xArm controller board.
+2. Confirm bus baud is 9600 for controller mode.
+3. Confirm GP0/GP1 wiring and shared GND.
+4. Use the smoke test sequence:
+   - select servo ID (1..6)
+   - ping (p)
+   - read position (r)
+   - move center (c)
+5. Check last driver error with e.
+
+If serial monitor works but commands fail:
+
+- protocol mismatch is likely (wrong backend or wrong baud)
+
+If only some IDs move:
+
+- verify each servo ID assignment and chain integrity
+
+## Maintenance Checklist
+
+When updating firmware behavior, also update this README:
+
+- protocol/backend assumptions
+- default pins/baud/backend
+- smoke-test command list
+- limitations and expected unsupported paths
+- any new files introduced in platform/drivers/hal/app

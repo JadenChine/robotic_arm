@@ -1,20 +1,39 @@
 #include "hal/servo_bus.h"
 
 #include "drivers/servo_bus_driver.hpp"
+#include "drivers/xarm_controller_driver.hpp"
 #include "platform/pico_uart_transport.hpp"
 #include "platform/servo_platform_config.h"
 
 static arm::PicoUartTransport g_transport;
-static arm::ServoBusDriver g_driver(g_transport);
+static arm::ServoBusDriver g_direct_driver(g_transport);
+static arm::XArmControllerDriver g_controller_driver(g_transport);
 static servo_bus_config_t g_active_config = {};
 static bool g_initialized = false;
 
-static servo_bus_status_t mapLastDriverError(void) {
-  switch (g_driver.getLastPacketError()) {
+static bool usingControllerBackend(void) {
+  return g_active_config.backend == SERVO_BUS_BACKEND_XARM_CONTROLLER;
+}
+
+static servo_bus_status_t mapDirectDriverError(void) {
+  switch (g_direct_driver.getLastPacketError()) {
     case arm::kServoErrorTimeout:
       return SERVO_BUS_STATUS_ERROR_TIMEOUT;
     case arm::kServoErrorOverflow:
       return SERVO_BUS_STATUS_ERROR_OVERFLOW;
+    default:
+      return SERVO_BUS_STATUS_ERROR_PROTOCOL;
+  }
+}
+
+static servo_bus_status_t mapControllerDriverError(void) {
+  switch (g_controller_driver.getLastPacketError()) {
+    case arm::kControllerErrorTimeout:
+      return SERVO_BUS_STATUS_ERROR_TIMEOUT;
+    case arm::kControllerErrorOverflow:
+      return SERVO_BUS_STATUS_ERROR_OVERFLOW;
+    case arm::kControllerErrorInvalidArgument:
+      return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
     default:
       return SERVO_BUS_STATUS_ERROR_PROTOCOL;
   }
@@ -31,8 +50,17 @@ void servo_bus_get_default_config(servo_bus_config_t* config) {
     return;
   }
 
+  config->backend = static_cast<servo_bus_backend_t>(SERVO_BUS_DEFAULT_BACKEND);
+  if (config->backend != SERVO_BUS_BACKEND_DIRECT_SERVO &&
+      config->backend != SERVO_BUS_BACKEND_XARM_CONTROLLER) {
+    config->backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+  }
+
   config->uart_index = SERVO_BUS_DEFAULT_UART_INDEX;
-  config->baud_rate = SERVO_BUS_DEFAULT_BAUD_RATE;
+  config->baud_rate =
+      config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO
+          ? SERVO_BUS_DIRECT_DEFAULT_BAUD_RATE
+          : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
   config->tx_pin = SERVO_BUS_DEFAULT_TX_PIN;
   config->rx_pin = SERVO_BUS_DEFAULT_RX_PIN;
   config->default_servo_id = SERVO_BUS_DEFAULT_SERVO_ID;
@@ -53,12 +81,25 @@ servo_bus_status_t servo_bus_init(const servo_bus_config_t* config) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
 
-  if (!g_transport.init(config->uart_index, config->baud_rate, config->tx_pin,
+  if (config->backend != SERVO_BUS_BACKEND_DIRECT_SERVO &&
+      config->backend != SERVO_BUS_BACKEND_XARM_CONTROLLER) {
+    return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
+  }
+
+  uint32_t baudRate = config->baud_rate;
+  if (baudRate == 0) {
+    baudRate = config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO
+                   ? SERVO_BUS_DIRECT_DEFAULT_BAUD_RATE
+                   : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
+  }
+
+  if (!g_transport.init(config->uart_index, baudRate, config->tx_pin,
                         config->rx_pin)) {
     return SERVO_BUS_STATUS_ERROR_PROTOCOL;
   }
 
   g_active_config = *config;
+  g_active_config.baud_rate = baudRate;
   g_initialized = true;
   return SERVO_BUS_STATUS_OK;
 }
@@ -68,7 +109,14 @@ servo_bus_status_t servo_bus_ping(uint8_t id) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  return g_driver.isConnected(id) ? SERVO_BUS_STATUS_OK : mapLastDriverError();
+
+  if (usingControllerBackend()) {
+    int16_t position = 0;
+    return g_controller_driver.readPosition(id, position) ? SERVO_BUS_STATUS_OK
+                                                          : mapControllerDriverError();
+  }
+
+  return g_direct_driver.isConnected(id) ? SERVO_BUS_STATUS_OK : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_move_raw(uint8_t id, int16_t position, uint16_t time_ms) {
@@ -76,7 +124,13 @@ servo_bus_status_t servo_bus_move_raw(uint8_t id, int16_t position, uint16_t tim
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.move(id, position, time_ms);
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.move(id, position, time_ms) ? SERVO_BUS_STATUS_OK
+                                                           : mapControllerDriverError();
+  }
+
+  g_direct_driver.move(id, position, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -85,7 +139,14 @@ servo_bus_status_t servo_bus_move_degrees(uint8_t id, float degrees, uint16_t ti
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.moveTo(id, degrees, time_ms);
+
+  if (usingControllerBackend()) {
+    const int16_t position = g_controller_driver.degreesToPosition(degrees);
+    return g_controller_driver.move(id, position, time_ms) ? SERVO_BUS_STATUS_OK
+                                                           : mapControllerDriverError();
+  }
+
+  g_direct_driver.moveTo(id, degrees, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -94,50 +155,90 @@ servo_bus_status_t servo_bus_stop(uint8_t id) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.stop(id);
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.unload(id) ? SERVO_BUS_STATUS_OK
+                                          : mapControllerDriverError();
+  }
+
+  g_direct_driver.stop(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_move_wait_raw(uint8_t id, int16_t position,
                                            uint16_t time_ms) {
+  (void)id;
+  (void)position;
+  (void)time_ms;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.moveWait(id, position, time_ms);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.moveWait(id, position, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_move_wait_degrees(uint8_t id, float degrees,
                                                uint16_t time_ms) {
+  (void)id;
+  (void)degrees;
+  (void)time_ms;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.moveWaitDegrees(id, degrees, time_ms);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.moveWaitDegrees(id, degrees, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_start_move(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.startMove(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.startMove(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_stop_move(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.stopMove(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.stopMove(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_read_wait_position(uint8_t id, int16_t* position,
                                                 uint16_t* time_ms) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -145,12 +246,20 @@ servo_bus_status_t servo_bus_read_wait_position(uint8_t id, int16_t* position,
   if (position == nullptr || time_ms == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.readWaitPosition(id, *position, *time_ms) ? SERVO_BUS_STATUS_OK
-                                                            : mapLastDriverError();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.readWaitPosition(id, *position, *time_ms)
+             ? SERVO_BUS_STATUS_OK
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_read_wait_position_degrees(uint8_t id, float* degrees,
                                                         uint16_t* time_ms) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -158,9 +267,14 @@ servo_bus_status_t servo_bus_read_wait_position_degrees(uint8_t id, float* degre
   if (degrees == nullptr || time_ms == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.readWaitPositionInDegrees(id, *degrees, *time_ms)
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.readWaitPositionInDegrees(id, *degrees, *time_ms)
              ? SERVO_BUS_STATUS_OK
-             : mapLastDriverError();
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_broadcast_move_raw(int16_t position, uint16_t time_ms) {
@@ -168,7 +282,13 @@ servo_bus_status_t servo_bus_broadcast_move_raw(int16_t position, uint16_t time_
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.broadcastMove(position, time_ms);
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.move(254, position, time_ms) ? SERVO_BUS_STATUS_OK
+                                                            : mapControllerDriverError();
+  }
+
+  g_direct_driver.broadcastMove(position, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -177,7 +297,14 @@ servo_bus_status_t servo_bus_broadcast_move_degrees(float degrees, uint16_t time
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.broadcastMoveDegrees(degrees, time_ms);
+
+  if (usingControllerBackend()) {
+    const int16_t position = g_controller_driver.degreesToPosition(degrees);
+    return g_controller_driver.move(254, position, time_ms) ? SERVO_BUS_STATUS_OK
+                                                            : mapControllerDriverError();
+  }
+
+  g_direct_driver.broadcastMoveDegrees(degrees, time_ms);
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -186,7 +313,13 @@ servo_bus_status_t servo_bus_broadcast_stop(void) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.broadcastStop();
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.unload(254) ? SERVO_BUS_STATUS_OK
+                                           : mapControllerDriverError();
+  }
+
+  g_direct_driver.broadcastStop();
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -195,7 +328,12 @@ servo_bus_status_t servo_bus_broadcast_led_on(void) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.broadcastLedOn();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.broadcastLedOn();
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -204,20 +342,35 @@ servo_bus_status_t servo_bus_broadcast_led_off(void) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.broadcastLedOff();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.broadcastLedOff();
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_id(uint8_t old_id, uint8_t new_id) {
+  (void)old_id;
+  (void)new_id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setId(old_id, new_id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setId(old_id, new_id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_id(uint8_t query_id, uint8_t* out_id) {
+  (void)query_id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -225,29 +378,51 @@ servo_bus_status_t servo_bus_get_id(uint8_t query_id, uint8_t* out_id) {
   if (out_id == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *out_id = g_driver.getId(query_id);
-  return *out_id == arm::kServoIdInvalid ? mapLastDriverError() : SERVO_BUS_STATUS_OK;
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *out_id = g_direct_driver.getId(query_id);
+  return *out_id == arm::kServoIdInvalid ? mapDirectDriverError() : SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_angle_offset(uint8_t id, int8_t offset) {
+  (void)id;
+  (void)offset;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setAngleOffset(id, offset);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setAngleOffset(id, offset);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_save_angle_offset(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.saveAngleOffset(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.saveAngleOffset(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_angle_offset(uint8_t id, int8_t* offset) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -255,23 +430,40 @@ servo_bus_status_t servo_bus_get_angle_offset(uint8_t id, int8_t* offset) {
   if (offset == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *offset = g_driver.getAngleOffset(id);
-  return *offset == static_cast<int8_t>(arm::kServoOffsetInvalid) ? mapLastDriverError()
-                                                                  : SERVO_BUS_STATUS_OK;
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *offset = g_direct_driver.getAngleOffset(id);
+  return *offset == static_cast<int8_t>(arm::kServoOffsetInvalid)
+             ? mapDirectDriverError()
+             : SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_angle_limits_raw(uint8_t id, int16_t min_angle,
                                                   int16_t max_angle) {
+  (void)id;
+  (void)min_angle;
+  (void)max_angle;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setAngleLimits(id, min_angle, max_angle);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setAngleLimits(id, min_angle, max_angle);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_angle_limits_raw(uint8_t id, int16_t* min_angle,
                                                   int16_t* max_angle) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -279,22 +471,39 @@ servo_bus_status_t servo_bus_get_angle_limits_raw(uint8_t id, int16_t* min_angle
   if (min_angle == nullptr || max_angle == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.getAngleLimits(id, *min_angle, *max_angle) ? SERVO_BUS_STATUS_OK
-                                                             : mapLastDriverError();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.getAngleLimits(id, *min_angle, *max_angle)
+             ? SERVO_BUS_STATUS_OK
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_set_angle_limits_degrees(uint8_t id, float min_degrees,
                                                       float max_degrees) {
+  (void)id;
+  (void)min_degrees;
+  (void)max_degrees;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setAngleLimitsInDegrees(id, min_degrees, max_degrees);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setAngleLimitsInDegrees(id, min_degrees, max_degrees);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_angle_limits_degrees(uint8_t id, float* min_degrees,
                                                       float* max_degrees) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -302,23 +511,39 @@ servo_bus_status_t servo_bus_get_angle_limits_degrees(uint8_t id, float* min_deg
   if (min_degrees == nullptr || max_degrees == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.getAngleLimitsInDegrees(id, *min_degrees, *max_degrees)
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.getAngleLimitsInDegrees(id, *min_degrees, *max_degrees)
              ? SERVO_BUS_STATUS_OK
-             : mapLastDriverError();
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_set_voltage_limits(uint8_t id, int16_t min_voltage_mv,
                                                 int16_t max_voltage_mv) {
+  (void)id;
+  (void)min_voltage_mv;
+  (void)max_voltage_mv;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setVoltageLimits(id, min_voltage_mv, max_voltage_mv);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setVoltageLimits(id, min_voltage_mv, max_voltage_mv);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_voltage_limits(uint8_t id, int16_t* min_voltage_mv,
                                                 int16_t* max_voltage_mv) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -326,23 +551,38 @@ servo_bus_status_t servo_bus_get_voltage_limits(uint8_t id, int16_t* min_voltage
   if (min_voltage_mv == nullptr || max_voltage_mv == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.getVoltageLimits(id, *min_voltage_mv, *max_voltage_mv)
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.getVoltageLimits(id, *min_voltage_mv, *max_voltage_mv)
              ? SERVO_BUS_STATUS_OK
-             : mapLastDriverError();
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_set_max_temperature_limit(uint8_t id,
                                                        uint8_t max_temp_c) {
+  (void)id;
+  (void)max_temp_c;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setMaxTemperatureLimit(id, max_temp_c);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setMaxTemperatureLimit(id, max_temp_c);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_max_temperature_limit(uint8_t id,
                                                        uint8_t* max_temp_c) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -350,11 +590,18 @@ servo_bus_status_t servo_bus_get_max_temperature_limit(uint8_t id,
   if (max_temp_c == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *max_temp_c = g_driver.getMaxTemperatureLimit(id);
-  return *max_temp_c == 0 ? mapLastDriverError() : SERVO_BUS_STATUS_OK;
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *max_temp_c = g_direct_driver.getMaxTemperatureLimit(id);
+  return *max_temp_c == 0 ? mapDirectDriverError() : SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_temperature(uint8_t id, int8_t* temperature_c) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -362,8 +609,13 @@ servo_bus_status_t servo_bus_get_temperature(uint8_t id, int8_t* temperature_c) 
   if (temperature_c == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *temperature_c = g_driver.getTemperature(id);
-  return *temperature_c == arm::kServoErrorTimeout ? mapLastDriverError()
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *temperature_c = g_direct_driver.getTemperature(id);
+  return *temperature_c == arm::kServoErrorTimeout ? mapDirectDriverError()
                                                    : SERVO_BUS_STATUS_OK;
 }
 
@@ -375,8 +627,18 @@ servo_bus_status_t servo_bus_get_voltage(uint8_t id, int16_t* voltage_mv) {
   if (voltage_mv == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *voltage_mv = g_driver.getVoltage(id);
-  return *voltage_mv == arm::kServoErrorTimeout ? mapLastDriverError()
+
+  if (usingControllerBackend()) {
+    int16_t controllerVoltageMv = 0;
+    if (!g_controller_driver.getBatteryVoltageMv(controllerVoltageMv)) {
+      return mapControllerDriverError();
+    }
+    *voltage_mv = controllerVoltageMv;
+    return SERVO_BUS_STATUS_OK;
+  }
+
+  *voltage_mv = g_direct_driver.getVoltage(id);
+  return *voltage_mv == arm::kServoErrorTimeout ? mapDirectDriverError()
                                                 : SERVO_BUS_STATUS_OK;
 }
 
@@ -388,8 +650,18 @@ servo_bus_status_t servo_bus_get_position_raw(uint8_t id, int16_t* position) {
   if (position == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *position = g_driver.getPosition(id);
-  return *position == arm::kServoPositionInvalidRaw ? mapLastDriverError()
+
+  if (usingControllerBackend()) {
+    int16_t rawPosition = 0;
+    if (!g_controller_driver.readPosition(id, rawPosition)) {
+      return mapControllerDriverError();
+    }
+    *position = rawPosition;
+    return SERVO_BUS_STATUS_OK;
+  }
+
+  *position = g_direct_driver.getPosition(id);
+  return *position == arm::kServoPositionInvalidRaw ? mapDirectDriverError()
                                                     : SERVO_BUS_STATUS_OK;
 }
 
@@ -401,30 +673,57 @@ servo_bus_status_t servo_bus_get_position_degrees(uint8_t id, float* degrees) {
   if (degrees == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *degrees = g_driver.getPositionInDegrees(id);
-  return *degrees == arm::kServoPositionInvalidDegrees ? mapLastDriverError()
+
+  if (usingControllerBackend()) {
+    int16_t rawPosition = 0;
+    if (!g_controller_driver.readPosition(id, rawPosition)) {
+      return mapControllerDriverError();
+    }
+    *degrees = g_controller_driver.positionToDegrees(rawPosition);
+    return SERVO_BUS_STATUS_OK;
+  }
+
+  *degrees = g_direct_driver.getPositionInDegrees(id);
+  return *degrees == arm::kServoPositionInvalidDegrees ? mapDirectDriverError()
                                                        : SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_servo_mode(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setServoMode(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setServoMode(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_motor_mode(uint8_t id, int16_t speed) {
+  (void)id;
+  (void)speed;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setMotorMode(id, speed);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setMotorMode(id, speed);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_mode(uint8_t id, servo_bus_mode_state_t* mode_state) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -432,16 +731,29 @@ servo_bus_status_t servo_bus_get_mode(uint8_t id, servo_bus_mode_state_t* mode_s
   if (mode_state == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.getMode(id, mode_state->mode, mode_state->speed) ? SERVO_BUS_STATUS_OK
-                                                                    : mapLastDriverError();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  return g_direct_driver.getMode(id, mode_state->mode, mode_state->speed)
+             ? SERVO_BUS_STATUS_OK
+             : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_motor_on(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.motorOn(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.motorOn(id);
   return SERVO_BUS_STATUS_OK;
 }
 
@@ -450,11 +762,19 @@ servo_bus_status_t servo_bus_motor_off(uint8_t id) {
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.motorOff(id);
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.unload(id) ? SERVO_BUS_STATUS_OK
+                                          : mapControllerDriverError();
+  }
+
+  g_direct_driver.motorOff(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_is_motor_on(uint8_t id, bool* is_on) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -462,38 +782,68 @@ servo_bus_status_t servo_bus_is_motor_on(uint8_t id, bool* is_on) {
   if (is_on == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *is_on = g_driver.isMotorOn(id);
-  return g_driver.getLastPacketError() == 0 ? SERVO_BUS_STATUS_OK : mapLastDriverError();
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *is_on = g_direct_driver.isMotorOn(id);
+  return g_direct_driver.getLastPacketError() == 0 ? SERVO_BUS_STATUS_OK
+                                                    : mapDirectDriverError();
 }
 
 servo_bus_status_t servo_bus_led_on(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.ledOn(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.ledOn(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_led_off(uint8_t id) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.ledOff(id);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.ledOff(id);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_set_led_errors(uint8_t id, uint8_t error_mask) {
+  (void)id;
+  (void)error_mask;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
   }
-  g_driver.setLedErrors(id, error_mask);
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  g_direct_driver.setLedErrors(id, error_mask);
   return SERVO_BUS_STATUS_OK;
 }
 
 servo_bus_status_t servo_bus_get_led_errors(uint8_t id, uint8_t* error_mask) {
+  (void)id;
+
   const servo_bus_status_t status = requireInitialized();
   if (status != SERVO_BUS_STATUS_OK) {
     return status;
@@ -501,8 +851,13 @@ servo_bus_status_t servo_bus_get_led_errors(uint8_t id, uint8_t* error_mask) {
   if (error_mask == nullptr) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  *error_mask = g_driver.getLedErrors(id);
-  return *error_mask == arm::kServoIdInvalid ? mapLastDriverError()
+
+  if (usingControllerBackend()) {
+    return SERVO_BUS_STATUS_ERROR_UNSUPPORTED;
+  }
+
+  *error_mask = g_direct_driver.getLedErrors(id);
+  return *error_mask == arm::kServoIdInvalid ? mapDirectDriverError()
                                              : SERVO_BUS_STATUS_OK;
 }
 
@@ -515,13 +870,25 @@ servo_bus_status_t servo_bus_move_multiple(const uint8_t* ids, const int16_t* po
   if (ids == nullptr || positions == nullptr || count == 0) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  return g_driver.moveMultiple(ids, positions, time_ms, static_cast<int>(count))
+
+  if (usingControllerBackend()) {
+    return g_controller_driver.moveMultiple(ids, positions, count, time_ms)
+               ? SERVO_BUS_STATUS_OK
+               : mapControllerDriverError();
+  }
+
+  return g_direct_driver.moveMultiple(ids, positions, time_ms, static_cast<int>(count))
              ? SERVO_BUS_STATUS_OK
              : SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
 }
 
 int servo_bus_get_last_driver_error(void) {
-  return g_driver.getLastPacketError();
+  if (!g_initialized) {
+    return 0;
+  }
+
+  return usingControllerBackend() ? g_controller_driver.getLastPacketError()
+                                  : g_direct_driver.getLastPacketError();
 }
 
 }  // extern "C"

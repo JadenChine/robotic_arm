@@ -16,9 +16,16 @@ typedef enum servo_bus_status {
   SERVO_BUS_STATUS_ERROR_TIMEOUT = -3,
   SERVO_BUS_STATUS_ERROR_OVERFLOW = -4,
   SERVO_BUS_STATUS_ERROR_PROTOCOL = -5,
+  SERVO_BUS_STATUS_ERROR_UNSUPPORTED = -6,
 } servo_bus_status_t;
 
+typedef enum servo_bus_backend {
+  SERVO_BUS_BACKEND_DIRECT_SERVO = 0,
+  SERVO_BUS_BACKEND_XARM_CONTROLLER = 1,
+} servo_bus_backend_t;
+
 typedef struct servo_bus_config {
+  servo_bus_backend_t backend;
   uint8_t uart_index;
   uint32_t baud_rate;
   uint8_t tx_pin;
