@@ -1,22 +1,60 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include "hal/servo_bus.h"
+#include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "platform/servo_platform_config.h"
 
-#define SMOKE_TEST_MIN_SERVO_ID 1u
-#define SMOKE_TEST_MAX_SERVO_ID 6u
+#define ARM_JOINT_COUNT 6u
 
-static uint8_t clamp_active_servo_id(uint8_t servo_id) {
-	if (servo_id < SMOKE_TEST_MIN_SERVO_ID || servo_id > SMOKE_TEST_MAX_SERVO_ID) {
-		return SMOKE_TEST_MIN_SERVO_ID;
+#define CONTROL_TICK_HZ 20u
+#define CONTROL_MOVE_TIME_MS 120u
+#define CONTROL_RAW_DEADBAND 2
+
+#define JOINT_DEFAULT_MIN_MDEG (-90000)
+#define JOINT_DEFAULT_MAX_MDEG (90000)
+
+
+typedef struct joint_config {
+	uint8_t servo_id;
+	int32_t min_mdeg;
+	int32_t max_mdeg;
+	int8_t direction;
+	int32_t offset_mdeg;
+} joint_config_t;
+
+// Register-style global targets for each joint in millidegrees.
+volatile int32_t g_joint_target_mdeg[ARM_JOINT_COUNT] = {0, 0, 0, 0, 0, 0};
+
+static const joint_config_t g_joint_configs[ARM_JOINT_COUNT] = {
+	{1u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{2u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{3u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{4u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{5u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{6u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+};
+
+static int16_t g_last_sent_raw_by_joint[ARM_JOINT_COUNT] = {0};
+static bool g_last_sent_valid_by_joint[ARM_JOINT_COUNT] = {false};
+static volatile bool g_control_tick_due = false;
+
+// Clamps an integer value between a minimum and maximum range.
+static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
+	if (value < minimum) {
+		return minimum;
 	}
-	return servo_id;
+	if (value > maximum) {
+		return maximum;
+	}
+	return value;
 }
 
+// Converts a servo bus status to a human-readable string.
 static const char* status_to_string(servo_bus_status_t status) {
 	switch (status) {
 		case SERVO_BUS_STATUS_OK:
@@ -37,6 +75,7 @@ static const char* status_to_string(servo_bus_status_t status) {
 	}
 }
 
+// Converts a servo bus backend type to a human-readable string.
 static const char* backend_to_string(servo_bus_backend_t backend) {
 	switch (backend) {
 		case SERVO_BUS_BACKEND_DIRECT_SERVO:
@@ -47,147 +86,148 @@ static const char* backend_to_string(servo_bus_backend_t backend) {
 	}
 }
 
-static float clamp_demo_degrees(float degrees) {
-	if (degrees < -120.0f) {
-		return -120.0f;
+// Applies joint-specific transformations to a target angle in millidegrees.
+static int32_t apply_joint_transform(const joint_config_t* config, int32_t target_mdeg) {
+	int32_t transformed_mdeg = clamp_i32(target_mdeg, config->min_mdeg, config->max_mdeg);
+
+	if (config->direction < 0) {
+		transformed_mdeg = -transformed_mdeg;
 	}
-	if (degrees > 120.0f) {
-		return 120.0f;
-	}
-	return degrees;
+
+	transformed_mdeg += config->offset_mdeg;
+	return clamp_i32(transformed_mdeg, -120000, 120000);
 }
 
-static void print_help(const servo_bus_config_t* config, uint8_t active_servo_id) {
-	printf("\nCommands:\n");
-	printf("  h or ? : print help\n");
-	printf("  1..6   : select active servo ID (current: %u)\n", active_servo_id);
-	printf("  p      : ping active servo (position read probe)\n");
-	printf("  c      : move active servo to center (0 deg)\n");
-	printf("  a      : step left by configured increment\n");
-	printf("  d      : step right by configured increment\n");
-	printf("  s      : stop/unload active servo\n");
-	printf("  r      : read active servo position\n");
-	if (config->backend == SERVO_BUS_BACKEND_XARM_CONTROLLER) {
-		printf("  v      : read controller battery voltage\n");
-		printf("  t      : read active servo temperature (unsupported in this mode)\n");
-	} else {
-		printf("  v      : read active servo voltage\n");
-		printf("  t      : read active servo temperature\n");
-	}
-	printf("  e      : print last driver error\n");
+// Converts an angle in millidegrees to a raw servo position value.
+static int16_t mdeg_to_raw_position(int32_t mdeg) {
+	const int32_t clamped_mdeg = clamp_i32(mdeg, -120000, 120000);
+	const int32_t scaled = (clamped_mdeg * 500) / 120000;
+	const int32_t raw_position = clamp_i32(500 + scaled, 0, 1000);
+	return (int16_t)raw_position;
 }
 
-static void print_banner(const servo_bus_config_t* config, uint8_t active_servo_id) {
-	printf("\nHiWonder Servo Smoke Test\n");
-	printf("  Backend      : %s\n", backend_to_string(config->backend));
-	printf("  Active servo : %u\n", active_servo_id);
-	printf("  Select range : %u-%u\n", SMOKE_TEST_MIN_SERVO_ID, SMOKE_TEST_MAX_SERVO_ID);
-	printf("  UART index   : %u\n", config->uart_index);
-	printf("  UART baud    : %lu\n", (unsigned long)config->baud_rate);
-	printf("  UART TX pin  : %u\n", config->tx_pin);
-	printf("  UART RX pin  : %u\n", config->rx_pin);
-	printf("  Move time ms : %u\n", config->default_move_time_ms);
-	printf("  Step degrees : %.1f\n", config->default_step_degrees);
-	printf("  Heartbeat LED: %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
-	print_help(config, active_servo_id);
+// Timer callback function to signal that a control tick is due.
+static bool control_tick_timer_callback(repeating_timer_t* timer) {
+	(void)timer;
+	g_control_tick_due = true;
+	return true;
 }
 
-static void handle_command(int ch, const servo_bus_config_t* config, uint8_t* active_servo_id,
-				   float* target_degrees_by_id) {
-	servo_bus_status_t status = SERVO_BUS_STATUS_OK;
-	float degrees = 0.0f;
-	int16_t raw_position = 0;
-	int16_t voltage_mv = 0;
-	int8_t temperature_c = 0;
-	const uint8_t servo_id = *active_servo_id;
-	float* target_degrees = &target_degrees_by_id[servo_id];
+// Consumes the control tick signal and resets its state.
+static bool consume_control_tick_due(void) {
+	const uint32_t irq_state = save_and_disable_interrupts();
+	const bool tick_due = g_control_tick_due;
+	g_control_tick_due = false;
+	restore_interrupts(irq_state);
+	return tick_due;
+}
 
-	switch (ch) {
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-			*active_servo_id = (uint8_t)(ch - '0');
-			printf("active servo set to ID %u\n", *active_servo_id);
-			break;
-		case 'h':
-		case '?':
-			print_help(config, *active_servo_id);
-			break;
-		case 'p':
-			status = servo_bus_ping(servo_id);
-			printf("ping servo %u: %s\n", servo_id, status_to_string(status));
-			break;
-		case 'c':
-			*target_degrees = 0.0f;
-			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
-			printf("servo %u move center: %s\n", servo_id, status_to_string(status));
-			break;
-		case 'a':
-			*target_degrees = clamp_demo_degrees(*target_degrees - config->default_step_degrees);
-			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
-			printf("servo %u move %.1f deg: %s\n", servo_id, *target_degrees, status_to_string(status));
-			break;
-		case 'd':
-			*target_degrees = clamp_demo_degrees(*target_degrees + config->default_step_degrees);
-			status = servo_bus_move_degrees(servo_id, *target_degrees, config->default_move_time_ms);
-			printf("servo %u move %.1f deg: %s\n", servo_id, *target_degrees, status_to_string(status));
-			break;
-		case 's':
-			status = servo_bus_stop(servo_id);
-			printf("servo %u stop/unload: %s\n", servo_id, status_to_string(status));
-			break;
-		case 'r':
-			status = servo_bus_get_position_degrees(servo_id, &degrees);
-			if (status == SERVO_BUS_STATUS_OK) {
-				(void)servo_bus_get_position_raw(servo_id, &raw_position);
-				*target_degrees = clamp_demo_degrees(degrees);
-				printf("servo %u position: %.2f deg (raw %d)\n", servo_id, degrees, raw_position);
-			} else {
-				printf("servo %u position read: %s\n", servo_id, status_to_string(status));
-			}
-			break;
-		case 'v':
-			status = servo_bus_get_voltage(servo_id, &voltage_mv);
-			if (status == SERVO_BUS_STATUS_OK) {
-				if (config->backend == SERVO_BUS_BACKEND_XARM_CONTROLLER) {
-					printf("controller battery voltage: %d mV\n", voltage_mv);
-				} else {
-					printf("servo %u voltage: %d mV\n", servo_id, voltage_mv);
-				}
-			} else {
-				printf("servo %u voltage read: %s\n", servo_id, status_to_string(status));
-			}
-			break;
-		case 't':
-			status = servo_bus_get_temperature(servo_id, &temperature_c);
-			if (status == SERVO_BUS_STATUS_OK) {
-				printf("servo %u temperature: %d C\n", servo_id, temperature_c);
-			} else {
-				printf("servo %u temperature read: %s\n", servo_id, status_to_string(status));
-			}
-			break;
-		case 'e':
-			printf("last driver error: %d\n", servo_bus_get_last_driver_error());
-			break;
-		case '\r':
-		case '\n':
-			break;
-		default:
-			printf("unknown command '%c'\n", ch);
-			print_help(config, *active_servo_id);
-			break;
+// Initializes joint targets to a safe default pose.
+static void initialize_joint_targets_to_safe_pose(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] = 0;
+		g_last_sent_valid_by_joint[joint_index] = false;
 	}
 }
 
+// Sends joint target positions to the servo bus if they have changed significantly.
+static servo_bus_status_t send_joint_targets_if_dirty(void) {
+	uint8_t ids[ARM_JOINT_COUNT] = {0};
+	int16_t positions[ARM_JOINT_COUNT] = {0};
+	uint8_t dirty_joint_indices[ARM_JOINT_COUNT] = {0};
+	size_t dirty_count = 0;
+
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		const joint_config_t* config = &g_joint_configs[joint_index];
+		const int32_t requested_mdeg = g_joint_target_mdeg[joint_index];
+		const int32_t transformed_mdeg = apply_joint_transform(config, requested_mdeg);
+		const int16_t raw_position = mdeg_to_raw_position(transformed_mdeg);
+
+		int32_t raw_difference = raw_position - g_last_sent_raw_by_joint[joint_index];
+		if (raw_difference < 0) {
+			raw_difference = -raw_difference;
+		}
+
+		if (!g_last_sent_valid_by_joint[joint_index] || raw_difference >= CONTROL_RAW_DEADBAND) {
+			ids[dirty_count] = config->servo_id;
+			positions[dirty_count] = raw_position;
+			dirty_joint_indices[dirty_count] = (uint8_t)joint_index;
+			++dirty_count;
+		}
+	}
+
+	if (dirty_count == 0) {
+		return SERVO_BUS_STATUS_OK;
+	}
+
+	const servo_bus_status_t status =
+		servo_bus_move_multiple(ids, positions, dirty_count, CONTROL_MOVE_TIME_MS);
+	if (status != SERVO_BUS_STATUS_OK) {
+		return status;
+	}
+
+	for (size_t dirty_index = 0; dirty_index < dirty_count; ++dirty_index) {
+		const uint8_t joint_index = dirty_joint_indices[dirty_index];
+		g_last_sent_raw_by_joint[joint_index] = positions[dirty_index];
+		g_last_sent_valid_by_joint[joint_index] = true;
+	}
+
+	return SERVO_BUS_STATUS_OK;
+}
+
+// Executes a single control tick, sending joint targets and handling errors.
+static void run_control_tick(void) {
+	static servo_bus_status_t last_status = SERVO_BUS_STATUS_OK;
+
+	const servo_bus_status_t status = send_joint_targets_if_dirty();
+	if (status != SERVO_BUS_STATUS_OK && status != last_status) {
+		printf("control tick send failed: %s (driver error %d)\n",
+		       status_to_string(status), servo_bus_get_last_driver_error());
+	}
+
+	if (status == SERVO_BUS_STATUS_OK && last_status != SERVO_BUS_STATUS_OK) {
+		printf("control tick send recovered\n");
+	}
+
+	last_status = status;
+}
+
+// Updates the heartbeat LED state based on control tick frequency.
+static void update_heartbeat(bool* led_on, uint32_t* tick_counter) {
+	const uint32_t ticks_per_toggle = (CONTROL_TICK_HZ >= 2u) ? (CONTROL_TICK_HZ / 2u) : 1u;
+
+	++(*tick_counter);
+	if (*tick_counter < ticks_per_toggle) {
+		return;
+	}
+
+	*tick_counter = 0;
+	*led_on = !(*led_on);
+	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, *led_on ? 1 : 0);
+}
+
+// Prints a startup banner with servo bus configuration details.
+static void print_banner(const servo_bus_config_t* config) {
+	printf("\nHiWonder Arm Joint Target Controller\n");
+	printf("  Backend       : %s\n", backend_to_string(config->backend));
+	printf("  UART index    : %u\n", config->uart_index);
+	printf("  UART baud     : %lu\n", (unsigned long)config->baud_rate);
+	printf("  UART TX pin   : %u\n", config->tx_pin);
+	printf("  UART RX pin   : %u\n", config->rx_pin);
+	printf("  Control tick  : %u Hz (timer IRQ scheduled)\n", CONTROL_TICK_HZ);
+	printf("  Move time ms  : %u\n", CONTROL_MOVE_TIME_MS);
+	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);
+	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
+	printf("  Target regs   : g_joint_target_mdeg[0..5] (millidegrees)\n");
+}
+
+// Main entry point for the robotic arm firmware.
 int main(void) {
 	servo_bus_config_t config;
-	uint32_t last_heartbeat_ms;
 	bool led_on = false;
-	uint8_t active_servo_id = SMOKE_TEST_MIN_SERVO_ID;
-	float target_degrees_by_id[SMOKE_TEST_MAX_SERVO_ID + 1] = {0.0f};
+	uint32_t heartbeat_ticks = 0;
+	servo_bus_status_t init_status;
+	repeating_timer_t control_tick_timer;
 
 	stdio_init_all();
 	sleep_ms(1500);
@@ -197,30 +237,32 @@ int main(void) {
 	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, 0);
 
 	servo_bus_get_default_config(&config);
-	active_servo_id = clamp_active_servo_id(config.default_servo_id);
-	if (config.default_servo_id != active_servo_id) {
-		printf("default servo ID %u outside smoke-test range, using %u\n",
-				config.default_servo_id, active_servo_id);
-	}
-	print_banner(&config, active_servo_id);
+	print_banner(&config);
 
 	printf("initializing servo bus... ");
-	servo_bus_status_t init_status = servo_bus_init(&config);
+	init_status = servo_bus_init(&config);
 	printf("%s\n", status_to_string(init_status));
+	if (init_status != SERVO_BUS_STATUS_OK) {
+		printf("servo bus initialization failed, control loop will stay idle\n");
+	}
 
-	last_heartbeat_ms = to_ms_since_boot(get_absolute_time());
+	initialize_joint_targets_to_safe_pose();
+	g_control_tick_due = true;
+
+	const int64_t control_period_us = -((int64_t)(1000000u / CONTROL_TICK_HZ));
+	if (!add_repeating_timer_us(control_period_us, control_tick_timer_callback, NULL,
+					   &control_tick_timer)) {
+		printf("failed to start control tick timer\n");
+	} else {
+		printf("control timer started: %u Hz\n", CONTROL_TICK_HZ);
+	}
 
 	while (true) {
-		uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-		if (now_ms - last_heartbeat_ms >= SERVO_BUS_HEARTBEAT_INTERVAL_MS) {
-			led_on = !led_on;
-			gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, led_on ? 1 : 0);
-			last_heartbeat_ms = now_ms;
-		}
-
-		int ch = getchar_timeout_us(0);
-		if (ch >= 0) {
-			handle_command(ch, &config, &active_servo_id, target_degrees_by_id);
+		if (consume_control_tick_due()) {
+			if (init_status == SERVO_BUS_STATUS_OK) {
+				run_control_tick();
+			}
+			update_heartbeat(&led_on, &heartbeat_ticks);
 		}
 
 		tight_loop_contents();

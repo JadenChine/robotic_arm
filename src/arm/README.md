@@ -15,7 +15,7 @@ The goal is to keep this file evergreen: accurate, practical, and focused on imp
 
 ## What This Firmware Does
 
-The firmware provides a C HAL and an interactive smoke test for controlling bus servos from a Raspberry Pi Pico.
+The firmware provides a C HAL and an application-layer control loop for commanding six arm joints from a Raspberry Pi Pico.
 
 Two UART protocol backends are supported:
 
@@ -35,7 +35,7 @@ The currently validated hardware path is:
 - Pico UART -> xArm bus-servo controller board UART
 - controller board -> daisy-chained servos
 
-Known-good usage includes selecting and controlling any of six servos in the smoke test, including selecting servo ID 1 (end of chain).
+Known-good usage includes controlling any of six servos through the controller backend, including servo ID 1 (end of chain).
 
 ## Architecture
 
@@ -46,7 +46,7 @@ Path: src/arm/src/platform
 Responsibilities:
 
 - Pico UART initialization and I/O
-- timing source access (millis)
+- timing primitives for periodic scheduling
 - hardware default values (UART index, pins, baud)
 
 Key files:
@@ -114,8 +114,9 @@ Path: src/arm/main.c
 Responsibilities:
 
 - heartbeat LED liveness loop
-- USB serial command interface for bench validation
-- quick protocol and wiring validation without higher-level planners
+- six global joint target registers (millidegrees)
+- repeating timer interrupt that schedules control ticks
+- periodic dirty-setpoint transmission through HAL
 
 ## Backend Comparison
 
@@ -149,33 +150,44 @@ Current defaults:
 - SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE = 9600
 - SERVO_BUS_DIRECT_DEFAULT_BAUD_RATE = 115200
 
-## Smoke Test Console (main.c)
+## Joint Target Control Loop (main.c)
 
-The smoke test is intentionally keyboard-driven and minimal.
+The application now runs as a periodic controller rather than a keyboard-driven smoke test.
 
-Command set:
+### Target Registers
 
-- h or ? : show help
-- 1..6 : select active servo ID
-- p : ping active servo
-- c : move active servo to center
-- a : step left
-- d : step right
-- s : stop/unload active servo
-- r : read active servo position
-- v : voltage read
-  - controller mode: controller battery voltage
-  - direct mode: servo voltage
-- t : temperature read
-  - controller mode: unsupported (clean status)
-  - direct mode: servo temperature
-- e : print last driver error
+- `g_joint_target_mdeg[0..5]` holds desired joint angles in millidegrees.
+- Register index maps to one arm joint.
+- Current default per-joint software limits are -90 deg to +90 deg.
 
-Behavior notes:
+### Timing Model
 
-- active servo selection persists until changed
-- each servo keeps its own tracked target angle for stepping behavior
-- heartbeat LED continues regardless of command success/failure
+- A repeating timer interrupt is configured from `CONTROL_TICK_HZ`.
+- The IRQ callback is intentionally minimal and only marks a control tick as pending.
+- UART transmission is executed in the main loop, not in IRQ context.
+
+### Tick Behavior
+
+On each scheduled control tick, the application:
+
+1. snapshots all 6 target registers,
+2. applies per-joint clamp, direction, and offset,
+3. converts millidegrees to protocol raw position (0..1000),
+4. applies a deadband against last-sent raw values,
+5. sends only dirty joints in one `servo_bus_move_multiple(...)` command.
+
+Startup behavior:
+
+- all target registers initialize to 0 deg,
+- first tick forces an initial command to establish a known pose.
+
+Current app-level defaults in `main.c`:
+
+- `CONTROL_TICK_HZ = 20`
+- `CONTROL_MOVE_TIME_MS = 120`
+- `CONTROL_RAW_DEADBAND = 2`
+
+These values are intended as a stable starting point for future human-in-the-loop control (encoders/sliders).
 
 ## Build and Flash
 
@@ -242,7 +254,7 @@ Top-level firmware files and folders:
 2. Keep HAL C-facing and backend-neutral.
 3. Preserve both backends unless intentionally removed.
 4. Add new protocol features to the correct driver first, then map through HAL.
-5. Keep smoke test simple and focused on bring-up/diagnostics.
+5. Keep IRQ callbacks short and non-blocking; do serial TX in non-IRQ code.
 
 ## Known Limitations
 
@@ -260,12 +272,14 @@ If servos do not respond:
 1. Confirm backend is controller mode when using xArm controller board.
 2. Confirm bus baud is 9600 for controller mode.
 3. Confirm GP0/GP1 wiring and shared GND.
-4. Use the smoke test sequence:
-   - select servo ID (1..6)
-   - ping (p)
-   - read position (r)
-   - move center (c)
-5. Check last driver error with e.
+4. Confirm firmware prints successful servo bus initialization.
+5. Confirm control timer started message appears at boot.
+
+If movement is jerky or bus-heavy:
+
+1. Lower `CONTROL_TICK_HZ`.
+2. Increase `CONTROL_RAW_DEADBAND`.
+3. Increase `CONTROL_MOVE_TIME_MS` for smoother interpolation.
 
 If serial monitor works but commands fail:
 
@@ -275,12 +289,17 @@ If only some IDs move:
 
 - verify each servo ID assignment and chain integrity
 
+If the arm does not react to changing target registers:
+
+- verify updates are writing the intended index in `g_joint_target_mdeg[0..5]`
+- verify values remain within configured software limits
+
 ## Maintenance Checklist
 
 When updating firmware behavior, also update this README:
 
 - protocol/backend assumptions
 - default pins/baud/backend
-- smoke-test command list
+- control loop rate/deadband/move-time defaults
 - limitations and expected unsupported paths
 - any new files introduced in platform/drivers/hal/app
