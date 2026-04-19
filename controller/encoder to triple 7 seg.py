@@ -1,262 +1,143 @@
 from machine import Pin
 from time import sleep_us
+import LCD
 
-flag = 0
-mem = 0
-value1 = value2 = value3 = value4 = value5 = value6 = 0
+# ── State ──────────────────────────────────────────────────────────────────────
+flag        = 0
+mem         = 0
+lcdFlag     = [True] * 6
+modeFlag    = True
+values      = [0] * 6
+prev_states = [0] * 6
+
 FORWARD, INVERSE, TEACH = range(3)
-MODES=[FORWARD, INVERSE, TEACH]
+MODES = [FORWARD, INVERSE, TEACH]
+NAMES = ["FORWARD", "INVERSE", " TEACH "]
+mode  = FORWARD
 
-mode = FORWARD
-
-numbers = [
-    [0, 0, 0],  # Group 1
-    [0, 0, 0],  # Group 2
-    [0, 0, 0],  # Group 3
-    [0, 0, 0],  # Group 4
-    [0, 0, 0],  # Group 5
-    [0, 0, 0]   # Group 6
-]
-
-# ==============================
-# SEGMENT PINS (COMMON ANODE)
-# ==============================
-seg_pins = [
-    Pin(28, Pin.OUT),   # A
-    Pin(27, Pin.OUT),   # B
-    Pin(26, Pin.OUT),   # C
-    Pin(22, Pin.OUT),   # D
-    Pin(21, Pin.OUT),   # E
-    Pin(20, Pin.OUT),   # F
-    Pin(19, Pin.OUT),  # G
-]
-
-# ==============================
-# DIGIT SELECT PINS
-# ==============================
-digits = [
-    Pin(10, Pin.OUT), #1
-    Pin(9, Pin.OUT),  #2
-    Pin(8, Pin.OUT),  #3
-    Pin(7, Pin.OUT),  #4
-    Pin(6, Pin.OUT),  #5
-    Pin(5, Pin.OUT),  #6
-    Pin(18, Pin.OUT),  #4
-    Pin(12, Pin.OUT),  #5
-    Pin(11, Pin.OUT),  #6
-    ]
-
-# Turn all digits OFF
-for d in digits:
-    d.value(0)
-
-# ==============================
-# DIGIT PATTERNS (Common Anode)
-# 0 = segment ON
-# ==============================
-DIGITS = [
-    [0,0,0,0,0,0,1], # 0
-    [1,0,0,1,1,1,1], # 1
-    [0,0,1,0,0,1,0], # 2
-    [0,0,0,0,1,1,0], # 3
-    [1,0,0,1,1,0,0], # 4
-    [0,1,0,0,1,0,0], # 5
-    [0,1,0,0,0,0,0], # 6
-    [0,0,0,1,1,1,1], # 7
-    [0,0,0,0,0,0,0], # 8
-    [0,0,0,0,1,0,0], # 9
-]
-
-def set_digits(digit):
-        if digit == 0: # Group 1 Hundreds digit
-            digits[0].value(1)
-        elif digit == 1: # Group 1 Tens digit
-            digits[1].value(1)
-        elif digit == 2: # Group 1 Ones digit
-            digits[2].value(1)
-            #digits[0].value(1)
-            #digits[1].value(1)
-        elif digit == 3: # Group 2 Hundreds digit
-            digits[3].value(1)
-            #digits[2].value(1)
-        elif digit == 4: # Group 2 Tens digit
-            digits[4].value(1)
-            #digits[0].value(1)
-            #digits[2].value(1)
-        elif digit == 5: # Group 2 Ones digit
-            digits[5].value(1)
-            #digits[1].value(1)
-            #digits[2].value(1)
-        elif digit == 6: # Group 3 Hundreds digit
-            digits[6].value(1)
-            #digits[0].value(1)
-            #digits[1].value(1)
-            #digits[2].value(1)
-        elif digit == 7: # Group 3 Tens digit
-            digits[7].value(1)
-            #digits[3].value(1)
-        elif digit == 8: # Group 3 Ones digit
-            digits[8].value(1)
-            #digits[0].value(1)
-            #digits[3].value(1)
-        else:
-            pass
-        '''
-        elif digit == 9: # Group 4 Hundreds digit
-            digits[1].value(1)
-            digits[3].value(1)
-        elif digit == 10: # Group 4 Tens digit
-            digits[0].value(1)
-            digits[1].value(1)
-            digits[3].value(1)
-        elif digit == 11: # Group 4 Ones digit
-            digits[2].value(1)
-            digits[3].value(1)
-        elif digit == 12: # Group 5 Hundreds digit
-            digits[0].value(1)
-            digits[2].value(1)
-            digits[3].value(1)
-        elif digit == 13: # Group 5 Tens digit
-            digits[1].value(1)
-            digits[2].value(1)
-            digits[3].value(1)
-        elif digit == 14: # Group 5 Ones digit
-            digits[0].value(1)
-            digits[1].value(1)
-            digits[2].value(1)
-            digits[3].value(1)
-        elif digit == 15: # Group 6 Hundreds digit
-            digits[4].value(1)
-        elif digit == 16: # Group 6 Tens digit
-            digits[0].value(1)
-            digits[4].value(1)
-        elif digit == 17: # Group 6 Ones digit
-            digits[1].value(1)
-            digits[4].value(1)
-        '''
-
-def set_segments(value):
-    pattern = DIGITS[value]
-    for i in range(7):
-        seg_pins[i].value(pattern[i])
-
-# ==============================
-# QUADRATURE ENCODER SETUP
-# ==============================
-A1 = Pin(2, Pin.IN, Pin.PULL_DOWN)
-B1 = Pin(3, Pin.IN, Pin.PULL_DOWN)
-
-A2 = Pin(16, Pin.IN, Pin.PULL_DOWN)
-B2 = Pin(17, Pin.IN, Pin.PULL_DOWN)
-
-button = Pin(4, Pin.IN, Pin.PULL_DOWN)
-
-prev_state1 = (A1.value() << 1) | B1.value()
-prev_state2 = (A2.value() << 1) | B2.value()
-
-# 4x resolution transition table
+# 4x resolution quadrature transition table
 TRANSITIONS = [
-    0,  -1,  1,   0,
-    1,   0,   0,  -1,
-   -1,   0,   0,   1,
-    0,   1,  -1,   0
+     0, -1,  1,  0,
+     1,  0,  0, -1,
+    -1,  0,  0,  1,
+     0,  1, -1,  0,
 ]
 
-def encoder1(pin):
-    global value1, prev_state1
-    value1, prev_state1 = update(value1, prev_state1, 0)
+# ── LCD init ───────────────────────────────────────────────────────────────────
+White = LCD.RGB(250, 250, 250)
+Black = LCD.RGB(0, 0, 0)
+LCD.Init()
+LCD.Clear(Black)
+for i, label in enumerate(["Dial 1","Dial 2","Dial 3","Dial 4","Dial 5","Dial 6"]):
+    LCD.Text(label, 10 + 56 * i, 280, White, Black)
+LCD.Text("Mode", 366, 280, White, Black)
 
-def encoder2(pin):
-    global value2, prev_state2
-    value2, prev_state2 = update(value2, prev_state2, 1)
+# ── Pin definitions ────────────────────────────────────────────────────────────
+A1 = Pin(21, Pin.IN, Pin.PULL_DOWN)
+B1 = Pin(20, Pin.IN, Pin.PULL_DOWN)
+A2 = Pin(19, Pin.IN, Pin.PULL_DOWN)
+B2 = Pin(18, Pin.IN, Pin.PULL_DOWN)
+# A3 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# B3 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# A4 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# B4 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# A5 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# B5 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# A6 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+# B6 = Pin(??, Pin.IN, Pin.PULL_DOWN)
 
-def encoder3(pin):
-    global value3, prev_state3
-    value3, prev_state3 = update(value3, prev_state3, 2)
+button = Pin(15, Pin.IN, Pin.PULL_DOWN)
 
-def encoder4(pin):
-    global value4, prev_state4
-    value4, prev_state4 = update(value4, prev_state4, 3)
+# Capture initial states for active encoders
+prev_states[0] = (A1.value() << 1) | B1.value()
+prev_states[1] = (A2.value() << 1) | B2.value()
+# prev_states[2] = (A3.value() << 1) | B3.value()
+# prev_states[3] = (A4.value() << 1) | B4.value()
+# prev_states[4] = (A5.value() << 1) | B5.value()
+# prev_states[5] = (A6.value() << 1) | B6.value()
 
-def encoder5(pin):
-    global value5, prev_state5
-    value5, prev_state5 = update(value5, prev_state5, 4)
+# ── Encoder update (shared, called from IRQ) ───────────────────────────────────
+def update_encoder(idx):
+    global values, prev_states, lcdFlag
+    if idx == 0:
+        current = (A1.value() << 1) | B1.value()
+    elif idx == 1:
+        current = (A2.value() << 1) | B2.value()
+    # elif idx == 2:
+    #     current = (A3.value() << 1) | B3.value()
+    # elif idx == 3:
+    #     current = (A4.value() << 1) | B4.value()
+    # elif idx == 4:
+    #     current = (A5.value() << 1) | B5.value()
+    # elif idx == 5:
+    #     current = (A6.value() << 1) | B6.value()
+    transition = (prev_states[idx] << 2) | current
+    values[idx] = (values[idx] + TRANSITIONS[transition]) % 1000
+    prev_states[idx] = current
+    lcdFlag[idx] = True
 
-def encoder6(pin):
-    global value6, prev_state6
-    value6, prev_state6 = update(value6, prev_state6, 5)
+def make_handler(idx):
+    def handler(pin):
+        update_encoder(idx)
+    return handler
 
-def update(value, prev_state, num):
-
-    current_state = (Encoder_values[num][0] << 1) | Encoder_values[num][1]
-    index = (prev_state << 2) | current_state
-
-    value += TRANSITIONS[index]
-
-    # Keep number between 0–999
-    if value < 0:
-        value = 999
-    elif value > 999:
-        value = 0
-
-    prev_state = current_state
-
-    return value, prev_state
-
+# ── Button / mode ──────────────────────────────────────────────────────────────
 def switch(pin):
-    global flag, value1, mem
+    global flag, values, mem
     if flag:
-        value1 = mem
+        values[0] = mem
         flag = 0
     else:
-        mem = value1
+        mem = values[0]
         flag = 1
-    print(pin)
-        
+
 def modeNext(pin):
-    global mode
+    global mode, modeFlag
     mode = (mode + 1) % len(MODES)
-    
+    modeFlag = True
+
 def modePrev(pin):
-    global mode
+    global mode, modeFlag
     mode = (mode - 1) % len(MODES)
+    modeFlag = True
 
-A1.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder1)
-B1.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder1)
-A2.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder2)
-B2.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder2)
-button.irq(trigger=Pin.IRQ_RISING, handler=switch)
+# ── Attach IRQs ───────────────────────────────────────────────────────────────
+TRIGGER = Pin.IRQ_RISING | Pin.IRQ_FALLING
 
-def split_number(num):
-    return [num // 100, (num % 100) // 10, num % 10]
+h1 = make_handler(0)
+A1.irq(trigger=TRIGGER, handler=h1)
+B1.irq(trigger=TRIGGER, handler=h1)
 
-# ==============================
-# MAIN LOOP (DISPLAY REFRESH)
-# ==============================
+h2 = make_handler(1)
+A2.irq(trigger=TRIGGER, handler=h2)
+B2.irq(trigger=TRIGGER, handler=h2)
+
+# h3 = make_handler(2)
+# A3.irq(trigger=TRIGGER, handler=h3)
+# B3.irq(trigger=TRIGGER, handler=h3)
+
+# h4 = make_handler(3)
+# A4.irq(trigger=TRIGGER, handler=h4)
+# B4.irq(trigger=TRIGGER, handler=h4)
+
+# h5 = make_handler(4)
+# A5.irq(trigger=TRIGGER, handler=h5)
+# B5.irq(trigger=TRIGGER, handler=h5)
+
+# h6 = make_handler(5)
+# A6.irq(trigger=TRIGGER, handler=h6)
+# B6.irq(trigger=TRIGGER, handler=h6)
+
+button.irq(trigger=Pin.IRQ_RISING, handler=modeNext)
+
+# ── Main loop ──────────────────────────────────────────────────────────────────
 while True:
-    Encoder_values = [
-    [A1.value(), B1.value()],
-    [A2.value(), B2.value()]
-    ]
-    
-    # Update numbers list with current encoder values
-    numbers[0] = split_number(value1)
-    numbers[1] = split_number(value2)
-    numbers[2] = split_number(value3)
-    numbers[3] = split_number(value4)
-    numbers[4] = split_number(value5)
-    numbers[5] = split_number(value6)
-
-    # Display on each of the 6 7 segment displays
-    for displays in range(6):
-        for digit in range(3):
-            # Turn ALL digits OFF first
-            for d in digits:
-                d.value(0)
-            # Set segments for current digit
-            set_segments(numbers[displays][digit])
-
-            # Now enable the digit
-            set_digits(displays * 3 + digit)
-
-            sleep_us(1)
+    if any(lcdFlag):
+        for i in range(6):
+            if lcdFlag[i]:
+                LCD.Number(values[i], 3, 0, 18 + 56 * i, 304, White, Black)
+                lcdFlag[i] = False
+    if modeFlag:
+        LCD.Text(NAMES[mode], 354, 304, White, Black)
+        modeFlag = False
+    sleep_us(1)
