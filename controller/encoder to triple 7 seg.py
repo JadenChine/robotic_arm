@@ -1,14 +1,22 @@
 from machine import Pin
-from time import sleep_us
+from time import sleep
 import LCD
+import struct
+import bluetooth
+from ble_advertising import advertising_payload
+from ble_simple_peripheral import BLESimplePeripheral
 
 # ── State ──────────────────────────────────────────────────────────────────────
 flag        = 0
 mem         = 0
-lcdFlag     = [True] * 6
+lcdFlag     = [False] * 6
+invLcdFlag  = [False] * 3
 modeFlag    = True
 values      = [0] * 6
+invValues   = [20] * 3
 prev_states = [0] * 6
+ble = bluetooth.BLE()
+Bluetooth = BLESimplePeripheral(ble)
 
 FORWARD, INVERSE, TEACH = range(3)
 MODES = [FORWARD, INVERSE, TEACH]
@@ -37,8 +45,8 @@ A1 = Pin(21, Pin.IN, Pin.PULL_DOWN)
 B1 = Pin(20, Pin.IN, Pin.PULL_DOWN)
 A2 = Pin(19, Pin.IN, Pin.PULL_DOWN)
 B2 = Pin(18, Pin.IN, Pin.PULL_DOWN)
-# A3 = Pin(??, Pin.IN, Pin.PULL_DOWN)
-# B3 = Pin(??, Pin.IN, Pin.PULL_DOWN)
+A3 = Pin(17, Pin.IN, Pin.PULL_DOWN)
+B3 = Pin(16, Pin.IN, Pin.PULL_DOWN)
 # A4 = Pin(??, Pin.IN, Pin.PULL_DOWN)
 # B4 = Pin(??, Pin.IN, Pin.PULL_DOWN)
 # A5 = Pin(??, Pin.IN, Pin.PULL_DOWN)
@@ -51,20 +59,20 @@ button = Pin(15, Pin.IN, Pin.PULL_DOWN)
 # Capture initial states for active encoders
 prev_states[0] = (A1.value() << 1) | B1.value()
 prev_states[1] = (A2.value() << 1) | B2.value()
-# prev_states[2] = (A3.value() << 1) | B3.value()
+prev_states[2] = (A3.value() << 1) | B3.value()
 # prev_states[3] = (A4.value() << 1) | B4.value()
 # prev_states[4] = (A5.value() << 1) | B5.value()
 # prev_states[5] = (A6.value() << 1) | B6.value()
 
 # ── Encoder update (shared, called from IRQ) ───────────────────────────────────
 def update_encoder(idx):
-    global values, prev_states, lcdFlag
+    global values, prev_states, lcdFlag, invValues
     if idx == 0:
         current = (A1.value() << 1) | B1.value()
     elif idx == 1:
         current = (A2.value() << 1) | B2.value()
-    # elif idx == 2:
-    #     current = (A3.value() << 1) | B3.value()
+    elif idx == 2:
+        current = (A3.value() << 1) | B3.value()
     # elif idx == 3:
     #     current = (A4.value() << 1) | B4.value()
     # elif idx == 4:
@@ -72,9 +80,26 @@ def update_encoder(idx):
     # elif idx == 5:
     #     current = (A6.value() << 1) | B6.value()
     transition = (prev_states[idx] << 2) | current
-    values[idx] = (values[idx] + TRANSITIONS[transition]) % 1000
+    if mode == FORWARD:
+        values[idx] = (values[idx] + TRANSITIONS[transition])
+        if (values[idx] > 180):
+            values[idx] = 180
+        elif (values[idx] < -180):
+            values[idx] = -180
+        lcdFlag[idx] = True
+    elif mode == INVERSE:
+        invValues[idx] = (invValues[idx] + TRANSITIONS[transition])
+        if (invValues[idx] > 100):
+            invValues[idx] = 100
+        elif (invValues[idx] < 20 and TRANSITIONS[transition] == -1 and invValues[idx] > -20):
+            invValues[idx] = -20
+        elif (invValues[idx] > -20 and TRANSITIONS[transition] == 1 and invValues[idx] < 20):
+            invValues[idx] = 20
+        elif (invValues[idx] < -100):
+            invValues[idx] = -100
+        invLcdFlag[idx] = True
     prev_states[idx] = current
-    lcdFlag[idx] = True
+
 
 def make_handler(idx):
     def handler(pin):
@@ -92,14 +117,26 @@ def switch(pin):
         flag = 1
 
 def modeNext(pin):
-    global mode, modeFlag
+    global mode, modeFlag, values
     mode = (mode + 1) % len(MODES)
     modeFlag = True
+    values = [0] * 6
+    invValues = [20] * 3
 
 def modePrev(pin):
-    global mode, modeFlag
+    global mode, modeFlag, values
     mode = (mode - 1) % len(MODES)
     modeFlag = True
+    values = [0] * 6
+    invValues = [20] * 3
+    
+def transmitData():   
+    data = values + invValues
+    data.append(mode)
+    for i in range(10):
+        LCD.Number((data[i]),4,0, 10 + 40 * i, 100, White, Black)
+    packed = struct.pack(f'{len(data)}b', *data)
+    Bluetooth.send(packed)
 
 # ── Attach IRQs ───────────────────────────────────────────────────────────────
 TRIGGER = Pin.IRQ_RISING | Pin.IRQ_FALLING
@@ -112,9 +149,9 @@ h2 = make_handler(1)
 A2.irq(trigger=TRIGGER, handler=h2)
 B2.irq(trigger=TRIGGER, handler=h2)
 
-# h3 = make_handler(2)
-# A3.irq(trigger=TRIGGER, handler=h3)
-# B3.irq(trigger=TRIGGER, handler=h3)
+h3 = make_handler(2)
+A3.irq(trigger=TRIGGER, handler=h3)
+B3.irq(trigger=TRIGGER, handler=h3)
 
 # h4 = make_handler(3)
 # A4.irq(trigger=TRIGGER, handler=h4)
@@ -132,12 +169,25 @@ button.irq(trigger=Pin.IRQ_RISING, handler=modeNext)
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 while True:
-    if any(lcdFlag):
-        for i in range(6):
-            if lcdFlag[i]:
-                LCD.Number(values[i], 3, 0, 18 + 56 * i, 304, White, Black)
-                lcdFlag[i] = False
-    if modeFlag:
-        LCD.Text(NAMES[mode], 354, 304, White, Black)
-        modeFlag = False
-    sleep_us(1)
+    if Bluetooth.is_connected():
+        if mode == FORWARD:
+            if any(lcdFlag):
+                for i in range(6):
+                    if lcdFlag[i]:
+                        LCD.Number(values[i], 4, 0, 18 + 56 * i, 304, White, Black)
+                        lcdFlag[i] = False
+        elif mode == INVERSE:
+            if any(invLcdFlag):
+                for i in range(3):
+                    if invLcdFlag[i]:
+                        LCD.Number(invValues[i], 4, 0, 18 + 56 * i, 10, White, Black)
+                        invLcdFlag[i] = False
+        if modeFlag:
+            LCD.Text(NAMES[mode], 354, 304, White, Black)
+            modeFlag = False
+            for i in range(6):
+                LCD.Number(values[i], 4, 0, 18 + 56 * i, 304, White, Black)
+            for i in range(3):
+                LCD.Number(invValues[i], 4, 0, 18 + 56 * i, 10, White, Black)
+        transmitData()
+    sleep(0.001)
