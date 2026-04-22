@@ -28,6 +28,13 @@ Current default behavior targets xArm controller boards (for example xArm v1.6):
 - bus baud rate: 9600
 - Pico UART pins: GP0 TX, GP1 RX
 
+In addition, the firmware now exposes a BLE GATT server on Pico W hardware:
+
+- BLE role: peripheral
+- intended centrals: Mac controller app and/or remote Pico W controller
+- BLE stack execution: core1
+- servo control loop + UART traffic: core0
+
 ## Current Verified Setup
 
 The currently validated hardware path is:
@@ -118,6 +125,24 @@ Responsibilities:
 - repeating timer interrupt that schedules control ticks
 - periodic dirty-setpoint transmission through HAL
 
+### 5) BLE Control Layer
+
+Path: src/arm/src/ble
+
+Responsibilities:
+
+- expose BLE GATT service for remote target writes
+- enforce single-owner control token semantics
+- queue cross-core BLE events for core0 application loop
+- trigger safe-pose fallback on owner disconnect/timeout
+
+Key files:
+
+- src/arm/src/ble/arm_ble_interface.h
+- src/arm/src/ble/arm_ble_interface.c
+- src/arm/src/ble/arm_control_service.gatt
+- src/arm/src/btstack_config.h
+
 ## Backend Comparison
 
 ### Direct Servo Backend
@@ -200,7 +225,7 @@ Typical flow:
 1. Configure (first time):
 
 ```bash
-cmake -S src/arm -B src/arm/build
+cmake -S src/arm -B src/arm/build -DPICO_BOARD=pico_w
 ```
 
 2. Build and flash:
@@ -221,6 +246,50 @@ Notes:
 
 - scripts/build_and_flash.sh expects picotool
 - scripts/serial_connect.sh expects picocom
+- BLE requires Pico W (CYW43)
+
+## BLE Control Interface
+
+### GATT Service
+
+Custom service UUIDs (Bluetooth base form):
+
+- service: `0xFFF0`
+- control point: `0xFFF1` (write)
+- owner token: `0xFFF2` (read, dynamic)
+- joint targets: `0xFFF3` (write/write-without-response)
+
+### Control Commands (`0xFFF1`)
+
+- `0x01`: take control (steals immediately)
+- `0x02`: release control
+
+### Owner Token (`0xFFF2`)
+
+- 4-byte little-endian `uint32`
+- `0` means no active owner
+- non-zero value changes whenever ownership is granted
+
+### Joint Target Packet (`0xFFF3`)
+
+Binary payload (12 bytes total):
+
+- 6 x `int16` little-endian
+- unit: deci-degrees (`0.1 deg`)
+- order: joint1, joint2, joint3, joint4, joint5, joint6
+
+Firmware conversion path:
+
+1. deci-degrees -> millidegrees (`value * 100`)
+2. write to `g_joint_target_mdeg[0..5]`
+3. existing 20 Hz control loop applies clamp/transform/deadband and transmits via UART backend
+
+### Ownership Rules
+
+- up to 2 BLE centrals can connect simultaneously
+- only current owner can write joint targets
+- non-owner target writes are rejected by GATT
+- if owner disconnects or stops sending updates for timeout window (`BLE_OWNER_TIMEOUT_MS`), ownership clears and safe pose (all zero targets) is commanded
 
 ## Wiring Guidance
 
@@ -247,6 +316,8 @@ Top-level firmware files and folders:
 - src/arm/src/platform/
 - src/arm/src/drivers/
 - src/arm/src/hal/
+- src/arm/src/ble/
+- src/arm/src/btstack_config.h
 
 ## Design Rules for Future Changes
 
@@ -274,6 +345,13 @@ If servos do not respond:
 3. Confirm GP0/GP1 wiring and shared GND.
 4. Confirm firmware prints successful servo bus initialization.
 5. Confirm control timer started message appears at boot.
+
+If BLE clients cannot control motion:
+
+1. Confirm board is Pico W and build used `-DPICO_BOARD=pico_w`.
+2. Confirm central writes `0x01` to `0xFFF1` before slider packets.
+3. Confirm joint packets are exactly 12 bytes (`6 x int16`, little-endian, 0.1 deg units).
+4. Confirm active owner has not timed out.
 
 If movement is jerky or bus-heavy:
 

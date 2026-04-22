@@ -1,0 +1,90 @@
+Task Description:
+Build a 3D kinematic simulation of our robotic arm so we can move the joints and see where the end effector ends up in 3D.
+
+What was made:
+- A 4-DOF arm model (base yaw + shoulder pitch + 2 elbow joints) with 3 physical links
+- Forward kinematics using the Robotics Toolbox for Python
+- A matplotlib 3D viewer with sliders and buttons so we can manually move joints
+- Constraints/safety checks (joint limits + ground collision boundary)
+- A test script that checks a bunch of sanity positions so we can trust the model and the math calculations
+
+Goal: 
+Make a simulation that matches the real arm’s geometry and joint behavior, at least for position.
+
+What was modeled:
+- Link lengths (geometry)
+- Joint axes + joint limits
+- End effector position in 3D
+
+Coordinate system + conventions:
+Uses the standard “Z-up” style coordinate system:
+- Origin at the robot base: (0,0,0)
+- XY plane is the floor/ground reference
+- +Z points upward
+
+Joints (4 total):
+1. base_yaw rotates about Z (spins the whole arm left/right)
+2. shoulder_pitch rotates about Y (moves the arm up/down in a vertical plane)
+3. elbow_1_pitch rotates about Y
+4. elbow_2_pitch rotates about Y
+
+Link lengths (mm):
+- Link 1 (upper arm): L1 = 101 mm
+- Link 2 (forearm): L2 = 95 mm
+- Link 3 (hand/tool): L3 = 168 mm
+
+Total reach (fully stretched):
+Total reach = L1 + L2 + L3 = 101 + 95 + 168 = 364 mm
+
+Joint limits (degrees):
+- Joint 1 (base_yaw): [-180, +180]
+- Joint 2 (shoulder_pitch): [-90, +90]
+- Joint 3 (elbow_1_pitch): [-90, +90]
+- Joint 4 (elbow_2_pitch): [-90, +90]
+
+Kinematics math (forward kinematics):
+
+Implemented via Robotics Toolbox ETS chain:
+The model uses an Elementary Transform Sequence (ETS) which builds the arm out of rotations for joints and translations for link lengths.
+
+The chain is:
+1. Rotate about Z by joint 1: Rz(theta1)
+2. Rotate about Y by -90 degrees (constant): Ry(-pi/2)
+3. Rotate about Y by joint 2: Ry(theta2)
+4. Translate along local X by L1: Tx(L1)
+5. Rotate about Y by joint 3: Ry(theta3)
+6. Translate along local X by L2: Tx(L2)
+7. Rotate about Y by joint 4: Ry(theta4)
+8. Translate along local X by L3: Tx(L3)
+
+So the full transform is basically:
+T = Rz(theta1) * Ry(-pi/2) * Ry(theta2) * Tx(L1) * Ry(theta3) * Tx(L2) * Ry(theta4) * Tx(L3)
+
+Manual calculations: 
+To make sure the toolbox setup isn’t wrong, the code also computes the joint positions manually in get_all_joint_positions().
+
+It uses an effective pitch angle of phi = pi/2 - theta2
+- if theta2 = 0 (home), then phi = pi/2 (pointing up)
+- if theta2 = pi/2 (90 degrees), then phi = 0 (pointing forward)
+
+Then it goes link-by-link:
+
+After link 1:
+x1 = L1*cos(theta1)*cos(phi)
+y1 = L1*sin(theta1)*cos(phi)
+z1 = L1*sin(phi)
+
+After link 2 (elbow 1 bends forward by subtracting theta3):
+phi2 = phi - theta3
+x2 = x1 + L2*cos(theta1)*cos(phi2)
+y2 = y1 + L2*sin(theta1)*cos(phi2)
+z2 = z1 + L2*sin(phi2)
+
+End effector (elbow 2 subtracts theta4):
+phi3 = phi2 - theta4
+x3 = x2 + L3*cos(theta1)*cos(phi3)
+y3 = y2 + L3*sin(theta1)*cos(phi3)
+z3 = z2 + L3*sin(phi3)
+
+Flow charts:
+(In this spot was a mermaid flow chart that broke down the exact code behavior of the sims)

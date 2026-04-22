@@ -1,0 +1,126 @@
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject var bleManager: BLEManager
+    @State private var jointAngles: [Double] = Array(repeating: 0.0, count: 6)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Robotic Arm BLE Control")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    statusRow(label: "State", value: bleManager.connectionState)
+                    statusRow(label: "Peripheral", value: bleManager.activePeripheralName)
+                    statusRow(label: "Owner Token", value: String(bleManager.currentOwnerToken))
+                    statusRow(label: "My Token", value: String(bleManager.myOwnerToken))
+                    statusRow(label: "Control", value: bleManager.hasControl ? "ACTIVE" : "NOT OWNER")
+
+                    if !bleManager.lastError.isEmpty {
+                        Text("Last BLE error: \(bleManager.lastError)")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Scan") {
+                    bleManager.startScan()
+                }
+
+                Button("Stop Scan") {
+                    bleManager.stopScan()
+                }
+
+                Button("Take Control") {
+                    bleManager.takeControl()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Release") {
+                    bleManager.releaseControl()
+                }
+
+                Button("Center Pose") {
+                    jointAngles = Array(repeating: 0.0, count: 6)
+                    bleManager.updateJointTargetsDegrees(jointAngles)
+                }
+            }
+
+            GroupBox("Discovered Arm Peripherals") {
+                if bleManager.discoveredPeripherals.isEmpty {
+                    Text("No matching peripherals found yet")
+                        .foregroundStyle(.secondary)
+                } else {
+                    List(bleManager.discoveredPeripherals, id: \.identifier) { peripheral in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(peripheral.name ?? "Unnamed")
+                                Text(peripheral.identifier.uuidString)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Connect") {
+                                bleManager.connect(to: peripheral)
+                            }
+                        }
+                    }
+                    .frame(height: 160)
+                }
+            }
+
+            GroupBox("Joint Targets (degrees)") {
+                VStack(spacing: 12) {
+                    ForEach(0..<6, id: \.self) { index in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Joint \(index + 1)")
+                                Spacer()
+                                Text(String(format: "%.1f°", jointAngles[index]))
+                                    .monospacedDigit()
+                            }
+
+                            Slider(
+                                value: Binding(
+                                    get: { jointAngles[index] },
+                                    set: { newValue in
+                                        jointAngles[index] = newValue
+                                        bleManager.updateJointTargetsDegrees(jointAngles)
+                                    }
+                                ),
+                                in: -90.0...90.0,
+                                step: 0.1
+                            )
+                        }
+                    }
+                }
+            }
+
+            if !bleManager.hasControl {
+                Text("Press Take Control before slider writes will be accepted by the arm Pico.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .onAppear {
+            bleManager.startScan()
+        }
+    }
+
+    @ViewBuilder
+    private func statusRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label + ":")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+}
+

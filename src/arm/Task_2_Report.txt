@@ -1,0 +1,158 @@
+Task Description: 
+Build an embedded software stack on Raspberry Pi Pico that can initialize the servo bus, command servo motion, read back telemetry, and make a simple CLI interface for bring-up testing. 
+ 
+What was made: 
+A layered firmware architecture under src/arm/src (in our repo) with: 
+Platform UART transport (Pico-specific) 
+Driver layer for two different protocols: 
+Direct HiWonder smart-servo protocol (Pico connected straight to servos) 
+xArm controller-board protocol (Pico connected through dev board) 
+C HAL API that sends requests to the selected backend 
+A keyboard driven smoke test app in for real-time commands 
+Build + flash + serial helper scripts for faster development 
+ 
+Goal: 
+Deliver a low-level control base that can move servos and read servo/controller data repeatably before kinematics and coordinated motion are done. 
+ 
+Architecture and software layers: 
+ 
+1) Application layer (main.c) 
+Initializes USB stdio, heartbeat LED, default servo-bus config, and bus transport. 
+Maintains: 
+active_servo_id (range 1..6) 
+target_degrees_by_id to remember per-servo target used by step commands 
+Runs an infinite non-blocking loop: 
+toggles heartbeat LED every 500 ms 
+polls keyboard input 
+dispatches commands in handle_command(...) 
+ 
+2) HAL layer (src/arm/src/hal/servo_bus.h/.cpp) 
+Provides a C interface for the app. 
+Performs: 
+initialization checks 
+backend routing 
+argument checks 
+status translation (timeout / overflow / invalid arg / protocol / unsupported / etc.) 
+ 
+3) Driver layer 
+ 
+3a) Direct smart-servo driver (servo_bus_driver.cpp/.hpp) 
+Packet format: 
+Header(0x55 0x55) + ID + LEN + CMD + PARAMS + CHECKSUM 
+Includes checksum validation and a compact parser state machine in receivePacket(...). 
+Implements broad command support: move, wait-move, read position, read voltage, 
+read temperature, limits, mode, LED/error configuration, broadcast, etc. 
+ 
+ 
+3b) xArm controller driver (xarm_controller_driver.cpp/.hpp) 
+Packet format: 
+Header(0x55 0x55) + LEN + CMD + PARAMS 
+Implements controller-specific commands used by this project: 
+multi-servo move 
+multi-servo position read 
+battery voltage read 
+servo unload 
+Uses parser states and timeout handling for response packets. 
+ 
+ 
+4) Platform transport layer (pico_uart_transport.cpp/.hpp) 
+Wraps Pico SDK UART functions. 
+Responsibilities: 
+UART selection (uart0 or uart1) 
+pin mux setup 
+send/flush 
+RX clear 
+availability/read polling 
+millisecond timing via to_ms_since_boot(...) 
+ 
+Current default configuration and assumptions: 
+Backend default: xArm controller mode (SERVO_BUS_DEFAULT_BACKEND = 1) 
+UART: index 0 
+Baud: 
+9600 in controller mode 
+115200 in direct-servo mode 
+Pins: 
+TX = GPIO0 
+RX = GPIO1 
+Heartbeat LED: 
+GPIO16, period 500 ms 
+Smoke test servo select range: 
+IDs 1..6 
+ 
+Terminal command interface: 
+h or ? : print command help 
+1..6 : set active servo ID 
+p : ping selected servo 
+controller backend: implemented as readPosition probe 
+direct backend: implemented as isConnected probe 
+c : move selected servo to 0.0 deg 
+a : decrement target by step size (default 15.0 deg), clamp to [-120, 120], then move 
+d : increment target by step size (default 15.0 deg), clamp to [-120, 120], then move 
+s : stop/unload selected servo 
+r : read current position in degrees (+ raw if available) 
+v : read voltage 
+controller backend returns controller battery voltage 
+direct backend returns per-servo voltage 
+t : read temperature 
+direct backend supported 
+controller backend returns unsupported 
+e : print low-level driver error code 
+ 
+Important math and command conversions: 
+ 
+1) Degree to position mapping used by drivers 
+Position command range is 0..1000. 
+Degree range is clamped to [-120, 120]. 
+ 
+Conversion used: 
+pos = (deg * (500 / 120)) + 500 
+ 
+Inverse: 
+deg = (pos - 500) * (120 / 500) 
+ 
+2) Controller move packet payload 
+params[0] = servo count 
+params[1..2] = move time (low/high) 
+then for each servo: [id, pos_low, pos_high] 
+ 
+3) Direct packet checksum 
+checksum = bitwise NOT of (ID + LEN + CMD + all params), low byte retained. 
+ 
+Verification approach: 
+Interactive smoke testing over USB serial: 
+select ID, ping, read position, move center/step, stop, read voltage/temperature 
+Functional checks of both command path and readback path. 
+Build/flash loop via scripts/build_and_flash.sh. 
+Serial interaction via scripts/serial_connect.sh using picocom. 
+ 
+Limitations at this stage: 
+No high-level coordinated multi-joint trajectory planner in app layer yet. 
+Controller backend intentionally reports unsupported for many direct-servo-only features (temperature, LED config, mode reads/writes, etc.). 
+This task validates transport + command execution path, not closed-loop kinematic arm control. 
+ 
+Flow Chart: 
+
+flowchart TD
+    A["Power On"] --> B["Initialize system and servo bus"]
+    B --> C{"Init successful?"}
+    C -- No --> D["Print error status"]
+    D --> E["Stay in loop for diagnostics"]
+    C -- Yes --> F["Enter main loop"]
+
+    F --> G["Heartbeat LED update"]
+    G --> H["Check for user input"]
+    H --> I{"Command received?"}
+    I -- No --> F
+    I -- Yes --> J["Handle command in main.c"]
+
+    J --> K["Call HAL API"]
+    K --> L{"Selected backend"}
+    L -- "Direct Servo" --> M["ServoBusDriver packet exchange"]
+    L -- "xArm Controller" --> N["XArmControllerDriver packet exchange"]
+
+    M --> O{"Result"}
+    N --> O
+    O -- Success --> P["Print move/read success output"]
+    O -- Failure --> Q["Print mapped error output"]
+    P --> F
+    Q --> F

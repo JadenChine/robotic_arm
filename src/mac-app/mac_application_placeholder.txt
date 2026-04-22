@@ -1,0 +1,11 @@
+The macOS BLE controller app is now implemented in this folder.
+
+Entry points:
+- Package.swift
+- Sources/ArmControlMacApp/ArmControlMacApp.swift
+- Sources/ArmControlMacApp/ContentView.swift
+- Sources/ArmControlMacApp/BLEManager.swift
+
+Run from this directory:
+
+swift run

@@ -3,10 +3,13 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "ble/arm_ble_interface.h"
 #include "hal/servo_bus.h"
 #include "hardware/sync.h"
+#include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "pico/util/queue.h"
 #include "platform/servo_platform_config.h"
 
 #define ARM_JOINT_COUNT 6u
@@ -14,6 +17,9 @@
 #define CONTROL_TICK_HZ 20u
 #define CONTROL_MOVE_TIME_MS 120u
 #define CONTROL_RAW_DEADBAND 2
+
+#define BLE_EVENT_QUEUE_LENGTH 24u
+#define BLE_OWNER_TIMEOUT_MS 1500u
 
 #define JOINT_DEFAULT_MIN_MDEG (-90000)
 #define JOINT_DEFAULT_MAX_MDEG (90000)
@@ -42,6 +48,7 @@ static const joint_config_t g_joint_configs[ARM_JOINT_COUNT] = {
 static int16_t g_last_sent_raw_by_joint[ARM_JOINT_COUNT] = {0};
 static bool g_last_sent_valid_by_joint[ARM_JOINT_COUNT] = {false};
 static volatile bool g_control_tick_due = false;
+static queue_t g_ble_event_queue;
 
 // Clamps an integer value between a minimum and maximum range.
 static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
@@ -127,6 +134,54 @@ static void initialize_joint_targets_to_safe_pose(void) {
 	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
 		g_joint_target_mdeg[joint_index] = 0;
 		g_last_sent_valid_by_joint[joint_index] = false;
+	}
+}
+
+// Marks all joints as dirty so the next control tick forces an update.
+static void mark_all_joint_outputs_dirty(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_last_sent_valid_by_joint[joint_index] = false;
+	}
+}
+
+// Applies a BLE target update packet to the joint target registers.
+static void apply_ble_joint_targets(const arm_ble_event_t* event) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] =
+			event->joint_target_deci_deg[joint_index] * 100;
+	}
+
+	g_control_tick_due = true;
+}
+
+// Applies safe-pose behavior after ownership timeout/disconnect.
+static void apply_ble_safe_pose(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] = 0;
+	}
+
+	mark_all_joint_outputs_dirty();
+	g_control_tick_due = true;
+	printf("ble safety event: commanding safe pose targets\n");
+}
+
+// Drains queued BLE events from core1 and applies them on core0.
+static void process_ble_events(void) {
+	arm_ble_event_t event;
+
+	while (queue_try_remove(&g_ble_event_queue, &event)) {
+		switch (event.type) {
+			case ARM_BLE_EVENT_SET_TARGETS:
+				apply_ble_joint_targets(&event);
+				break;
+
+			case ARM_BLE_EVENT_SAFE_POSE:
+				apply_ble_safe_pose();
+				break;
+
+			default:
+				break;
+		}
 	}
 }
 
@@ -219,6 +274,9 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);
 	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
 	printf("  Target regs   : g_joint_target_mdeg[0..5] (millidegrees)\n");
+	printf("  BLE role      : peripheral (core1)\n");
+	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 targets=0xFFF3\n");
+	printf("  BLE timeout   : %u ms to safe pose\n", BLE_OWNER_TIMEOUT_MS);
 }
 
 // Main entry point for the robotic arm firmware.
@@ -249,6 +307,14 @@ int main(void) {
 	initialize_joint_targets_to_safe_pose();
 	g_control_tick_due = true;
 
+	queue_init(&g_ble_event_queue, sizeof(arm_ble_event_t), BLE_EVENT_QUEUE_LENGTH);
+	if (arm_ble_prepare(&g_ble_event_queue, BLE_OWNER_TIMEOUT_MS)) {
+		multicore_launch_core1(arm_ble_core1_entry);
+		printf("ble core launched\n");
+	} else {
+		printf("ble setup failed: event queue unavailable\n");
+	}
+
 	const int64_t control_period_us = -((int64_t)(1000000u / CONTROL_TICK_HZ));
 	if (!add_repeating_timer_us(control_period_us, control_tick_timer_callback, NULL,
 					   &control_tick_timer)) {
@@ -258,6 +324,8 @@ int main(void) {
 	}
 
 	while (true) {
+		process_ble_events();
+
 		if (consume_control_tick_due()) {
 			if (init_status == SERVO_BUS_STATUS_OK) {
 				run_control_tick();

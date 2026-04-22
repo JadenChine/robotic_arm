@@ -1,2 +1,9 @@
-# CMake build output
+# vscode
+.vscode
+
+# Arm CMake build output
 src/arm/build/
+
+# Mac Application build output
+src/mac-app/.build/
+src/mac-app/.swiftpm/
