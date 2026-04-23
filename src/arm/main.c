@@ -19,7 +19,6 @@
 #define CONTROL_RAW_DEADBAND 2
 
 #define BLE_EVENT_QUEUE_LENGTH 24u
-#define BLE_OWNER_TIMEOUT_MS 1500u
 
 #define JOINT_DEFAULT_MIN_MDEG (-90000)
 #define JOINT_DEFAULT_MAX_MDEG (90000)
@@ -276,7 +275,7 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Target regs   : g_joint_target_mdeg[0..5] (millidegrees)\n");
 	printf("  BLE role      : peripheral (core1)\n");
 	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 targets=0xFFF3\n");
-	printf("  BLE timeout   : %u ms to safe pose\n", BLE_OWNER_TIMEOUT_MS);
+	printf("  BLE timeout   : disabled (release/disconnect only)\n");
 }
 
 // Main entry point for the robotic arm firmware.
@@ -308,7 +307,7 @@ int main(void) {
 	g_control_tick_due = true;
 
 	queue_init(&g_ble_event_queue, sizeof(arm_ble_event_t), BLE_EVENT_QUEUE_LENGTH);
-	if (arm_ble_prepare(&g_ble_event_queue, BLE_OWNER_TIMEOUT_MS)) {
+	if (arm_ble_prepare(&g_ble_event_queue, 0u)) {
 		multicore_launch_core1(arm_ble_core1_entry);
 		printf("ble core launched\n");
 	} else {

@@ -6,21 +6,20 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var discoveredPeripherals: [CBPeripheral] = []
     @Published var connectionState: String = "Bluetooth not ready"
     @Published var activePeripheralName: String = "Not connected"
+    @Published var isConnected: Bool = false
     @Published var hasControl: Bool = false
-    @Published var currentOwnerToken: UInt32 = 0
-    @Published var myOwnerToken: UInt32 = 0
     @Published var lastError: String = ""
 
     private var central: CBCentralManager?
     private var connectedPeripheral: CBPeripheral?
 
     private var controlPointCharacteristic: CBCharacteristic?
-    private var ownerTokenCharacteristic: CBCharacteristic?
+    private var ownerStatusCharacteristic: CBCharacteristic?
     private var jointTargetsCharacteristic: CBCharacteristic?
 
     private var pendingJointTargetsDegrees: [Double] = Array(repeating: 0.0, count: 6)
     private var pendingJointTargetsDirty = false
-    private var awaitingTakeControlConfirmation = false
+    private var disconnectAfterNextWrite: Bool = false
 
     private var jointSendTimer: Timer?
     private var ownerPollTimer: Timer?
@@ -29,6 +28,7 @@ final class BLEManager: NSObject, ObservableObject {
         case none
         case take
         case release
+        case releaseAndDisconnect
     }
 
     private var lastControlCommand: LastControlCommand = .none
@@ -49,7 +49,7 @@ final class BLEManager: NSObject, ObservableObject {
 
         ownerPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
             [weak self] _ in
-            self?.pollOwnerTokenIfPossible()
+            self?.pollOwnerStatusIfPossible()
         }
     }
 
@@ -61,7 +61,7 @@ final class BLEManager: NSObject, ObservableObject {
     func startScan() {
         guard let central else { return }
         guard central.state == .poweredOn else {
-            connectionState = "Bluetooth is not powered on"
+            connectionState = bluetoothStateMessage(for: central.state)
             return
         }
 
@@ -87,7 +87,26 @@ final class BLEManager: NSObject, ObservableObject {
 
     func disconnect() {
         guard let peripheral = connectedPeripheral else { return }
-        central?.cancelPeripheralConnection(peripheral)
+
+        // Best-effort: try to release before disconnecting.
+        disconnectAfterNextWrite = true
+        if let characteristic = controlPointCharacteristic {
+            let payload = Data([0x02])
+            lastControlCommand = .releaseAndDisconnect
+            peripheral.writeValue(payload, for: characteristic, type: .withResponse)
+
+            // Fallback: if the write never completes, still disconnect.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                guard self.disconnectAfterNextWrite else { return }
+                guard let connectedPeripheral = self.connectedPeripheral else { return }
+                self.central?.cancelPeripheralConnection(connectedPeripheral)
+                self.disconnectAfterNextWrite = false
+                self.lastControlCommand = .none
+            }
+        } else {
+            central?.cancelPeripheralConnection(peripheral)
+        }
     }
 
     func takeControl() {
@@ -99,7 +118,6 @@ final class BLEManager: NSObject, ObservableObject {
 
         let payload = Data([0x01])
         lastControlCommand = .take
-        awaitingTakeControlConfirmation = true
         peripheral.writeValue(payload, for: characteristic, type: .withResponse)
     }
 
@@ -123,11 +141,11 @@ final class BLEManager: NSObject, ObservableObject {
 
         pendingJointTargetsDegrees = jointAngles
         pendingJointTargetsDirty = true
+        flushJointTargetsNow()
     }
 
     private func flushPendingJointTargetsIfNeeded() {
         guard pendingJointTargetsDirty else { return }
-        guard hasControl else { return }
         guard let peripheral = connectedPeripheral,
               let characteristic = jointTargetsCharacteristic else {
             return
@@ -136,6 +154,18 @@ final class BLEManager: NSObject, ObservableObject {
         let packet = encodeJointTargetsPacket(pendingJointTargetsDegrees)
         let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
 
+        peripheral.writeValue(packet, for: characteristic, type: writeType)
+        pendingJointTargetsDirty = false
+    }
+
+    private func flushJointTargetsNow() {
+        guard let peripheral = connectedPeripheral,
+              let characteristic = jointTargetsCharacteristic else {
+            return
+        }
+
+        let packet = encodeJointTargetsPacket(pendingJointTargetsDegrees)
+        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
         peripheral.writeValue(packet, for: characteristic, type: writeType)
         pendingJointTargetsDirty = false
     }
@@ -154,14 +184,14 @@ final class BLEManager: NSObject, ObservableObject {
         return data
     }
 
-    private func pollOwnerTokenIfPossible() {
+    private func pollOwnerStatusIfPossible() {
         guard connectedPeripheral != nil else { return }
-        readOwnerToken()
+        readOwnerStatus()
     }
 
-    private func readOwnerToken() {
+    private func readOwnerStatus() {
         guard let peripheral = connectedPeripheral,
-              let characteristic = ownerTokenCharacteristic else {
+              let characteristic = ownerStatusCharacteristic else {
             return
         }
 
@@ -171,15 +201,14 @@ final class BLEManager: NSObject, ObservableObject {
     private func resetConnectionState() {
         connectedPeripheral = nil
         controlPointCharacteristic = nil
-        ownerTokenCharacteristic = nil
+        ownerStatusCharacteristic = nil
         jointTargetsCharacteristic = nil
         activePeripheralName = "Not connected"
-        currentOwnerToken = 0
-        myOwnerToken = 0
         hasControl = false
-        awaitingTakeControlConfirmation = false
         lastControlCommand = .none
         pendingJointTargetsDirty = false
+        isConnected = false
+        disconnectAfterNextWrite = false
     }
 }
 
@@ -190,21 +219,21 @@ extension BLEManager: CBCentralManagerDelegate {
             connectionState = "Bluetooth ready"
             startScan()
         case .poweredOff:
-            connectionState = "Bluetooth is powered off"
+            connectionState = bluetoothStateMessage(for: .poweredOff)
             resetConnectionState()
         case .resetting:
-            connectionState = "Bluetooth resetting"
+            connectionState = bluetoothStateMessage(for: .resetting)
             resetConnectionState()
         case .unauthorized:
-            connectionState = "Bluetooth unauthorized"
+            connectionState = bluetoothStateMessage(for: .unauthorized)
             resetConnectionState()
         case .unsupported:
-            connectionState = "BLE unsupported on this Mac"
+            connectionState = bluetoothStateMessage(for: .unsupported)
             resetConnectionState()
         case .unknown:
             fallthrough
         @unknown default:
-            connectionState = "Bluetooth state unknown"
+            connectionState = bluetoothStateMessage(for: .unknown)
             resetConnectionState()
         }
     }
@@ -227,6 +256,7 @@ extension BLEManager: CBCentralManagerDelegate {
         connectedPeripheral = peripheral
         peripheral.delegate = self
         activePeripheralName = peripheral.name ?? "Unnamed"
+        isConnected = true
         connectionState = "Connected, discovering services..."
         peripheral.discoverServices([armServiceUUID])
     }
@@ -251,6 +281,9 @@ extension BLEManager: CBCentralManagerDelegate {
             lastError = error.localizedDescription
         }
         resetConnectionState()
+
+        // Return to a clean scanning state automatically.
+        startScan()
     }
 }
 
@@ -289,7 +322,7 @@ extension BLEManager: CBPeripheralDelegate {
             case controlPointUUID:
                 controlPointCharacteristic = characteristic
             case ownerTokenUUID:
-                ownerTokenCharacteristic = characteristic
+                ownerStatusCharacteristic = characteristic
             case jointTargetsUUID:
                 jointTargetsCharacteristic = characteristic
             default:
@@ -298,10 +331,10 @@ extension BLEManager: CBPeripheralDelegate {
         }
 
         if controlPointCharacteristic != nil,
-           ownerTokenCharacteristic != nil,
+           ownerStatusCharacteristic != nil,
            jointTargetsCharacteristic != nil {
             connectionState = "Connected and ready"
-            readOwnerToken()
+            readOwnerStatus()
         }
     }
 
@@ -311,10 +344,17 @@ extension BLEManager: CBPeripheralDelegate {
         _ = peripheral
 
         if let error {
-            lastError = error.localizedDescription
-            if lastControlCommand == .take {
-                awaitingTakeControlConfirmation = false
+            // If we were trying to disconnect, continue anyway.
+            if lastControlCommand == .releaseAndDisconnect {
+                if let connectedPeripheral {
+                    central?.cancelPeripheralConnection(connectedPeripheral)
+                }
+                disconnectAfterNextWrite = false
+                lastControlCommand = .none
+                return
             }
+
+            lastError = error.localizedDescription
             return
         }
 
@@ -322,14 +362,20 @@ extension BLEManager: CBPeripheralDelegate {
         case controlPointUUID:
             switch lastControlCommand {
             case .take:
-                awaitingTakeControlConfirmation = true
-                readOwnerToken()
+                readOwnerStatus()
+
+                // Ensure the arm updates immediately to the current slider pose.
+                flushJointTargetsNow()
             case .release:
-                myOwnerToken = 0
                 hasControl = false
-                readOwnerToken()
+                readOwnerStatus()
             case .none:
                 break
+            case .releaseAndDisconnect:
+                if let connectedPeripheral {
+                    central?.cancelPeripheralConnection(connectedPeripheral)
+                }
+                disconnectAfterNextWrite = false
             }
             lastControlCommand = .none
 
@@ -353,21 +399,29 @@ extension BLEManager: CBPeripheralDelegate {
 
         guard characteristic.uuid == ownerTokenUUID,
               let data = characteristic.value,
-              data.count >= 4 else {
+              data.count >= 1 else {
             return
         }
 
-        let token = data.withUnsafeBytes { rawBuffer in
-            rawBuffer.load(as: UInt32.self)
-        }.littleEndian
+        hasControl = (data[0] != 0)
+    }
 
-        currentOwnerToken = token
-
-        if awaitingTakeControlConfirmation {
-            myOwnerToken = token
-            awaitingTakeControlConfirmation = false
+    private func bluetoothStateMessage(for state: CBManagerState) -> String {
+        switch state {
+        case .unknown:
+            return "Bluetooth state unknown"
+        case .resetting:
+            return "Bluetooth is resetting"
+        case .unsupported:
+            return "Bluetooth unsupported on this Mac"
+        case .unauthorized:
+            return "Bluetooth unauthorized (check Privacy & Security → Bluetooth)"
+        case .poweredOff:
+            return "Bluetooth is powered off"
+        case .poweredOn:
+            return "Bluetooth ready"
+        @unknown default:
+            return "Bluetooth state unavailable"
         }
-
-        hasControl = (myOwnerToken != 0 && currentOwnerToken == myOwnerToken)
     }
 }

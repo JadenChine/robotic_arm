@@ -13,9 +13,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     statusRow(label: "State", value: bleManager.connectionState)
                     statusRow(label: "Peripheral", value: bleManager.activePeripheralName)
-                    statusRow(label: "Owner Token", value: String(bleManager.currentOwnerToken))
-                    statusRow(label: "My Token", value: String(bleManager.myOwnerToken))
-                    statusRow(label: "Control", value: bleManager.hasControl ? "ACTIVE" : "NOT OWNER")
+                    statusRow(label: "Control", value: bleManager.hasControl ? "OWNER" : "NOT OWNER")
 
                     if !bleManager.lastError.isEmpty {
                         Text("Last BLE error: \(bleManager.lastError)")
@@ -33,6 +31,11 @@ struct ContentView: View {
                 Button("Stop Scan") {
                     bleManager.stopScan()
                 }
+
+                Button("Disconnect") {
+                    bleManager.disconnect()
+                }
+                .disabled(!bleManager.isConnected)
 
                 Button("Take Control") {
                     bleManager.takeControl()
@@ -87,8 +90,10 @@ struct ContentView: View {
                                 value: Binding(
                                     get: { jointAngles[index] },
                                     set: { newValue in
-                                        jointAngles[index] = newValue
-                                        bleManager.updateJointTargetsDegrees(jointAngles)
+                                        var updatedAngles = jointAngles
+                                        updatedAngles[index] = newValue
+                                        jointAngles = updatedAngles
+                                        bleManager.updateJointTargetsDegrees(updatedAngles)
                                     }
                                 ),
                                 in: -90.0...90.0,
@@ -100,7 +105,7 @@ struct ContentView: View {
             }
 
             if !bleManager.hasControl {
-                Text("Press Take Control before slider writes will be accepted by the arm Pico.")
+                Text("Sliders always transmit; the arm applies targets only from the current owner. Press Take Control to become the owner.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
