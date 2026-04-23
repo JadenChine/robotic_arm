@@ -98,11 +98,11 @@ This characteristic is intentionally asymmetric:
 
 **Mac → Pico:**
 1. User drags a slider → `updateJointTargetsDegrees([Double])` marks `pendingJointTargetsDirty`.
-2. A 20 Hz timer (`jointSendTimer`, 0.05 s) calls `flushPendingJointTargetsIfNeeded()`.
+2. A 60 Hz timer (`jointSendTimer`, ~0.0167 s) calls `flushPendingJointTargetsIfNeeded()`.
 3. `encodeJointTargetsPacket()` converts each `Double` degree → `Int16` deci-degrees (×10), clamped to ±900, packed as 12 bytes of little-endian `int16`.
-4. Written to `0xFFF3` (prefers write-without-response if supported).
+4. Written to `0xFFF3` (prefers write-without-response if supported). Writes are gated by CoreBluetooth backpressure when using write-without-response.
 
-The Mac app continuously writes targets while sliders are moved. It does **not** gate transmission on ownership; instead, the firmware gates **application** on ownership.
+The Mac app continuously writes targets while sliders are moved, but only when its connection is currently the owner.
 
 **Pico core 1 (BLE):** `att_write_callback()` → `handle_joint_targets_write()`:
 
@@ -118,7 +118,7 @@ The Mac app continuously writes targets while sliders are moved. It does **not**
 **Pico core 0 (main loop):** `process_ble_events()` dequeues the event → `apply_ble_joint_targets()`:
 - Converts deci-degrees to millidegrees (`value * 100`)
 - Writes into `g_joint_target_mdeg[0..5]`
-- Forces `g_control_tick_due = true`
+- Leaves servo transmission to the control-tick scheduler
 
 **Control tick (20 Hz timer ISR → main loop):** `send_joint_targets_if_dirty()`:
 - For each joint: clamp → direction/offset transform → `mdeg_to_raw_position()` (maps ±120° → 0–1000 raw)

@@ -2,7 +2,7 @@
 
 This folder contains a native SwiftUI macOS app that connects to the robotic arm (Pico W firmware) over Bluetooth Low Energy (BLE) and streams joint target angles.
 
-It is designed for quick interactive control while still being “polite” on BLE bandwidth (it rate-limits updates) and safe on the robot side (the firmware ignores target writes from non-owners).
+It is designed for quick interactive control while still being safe on BLE bandwidth and robust under load.
 
 ## What It Accomplishes
 
@@ -48,16 +48,17 @@ The UI sliders update continuously while you drag.
 
 - Every slider movement updates the local `jointAngles` state and calls `BLEManager.updateJointTargetsDegrees(...)`.
 - `BLEManager` stores the latest target pose as “pending” and marks it dirty.
-- A timer flushes pending targets every 0.05 seconds (20 Hz). If there were multiple slider changes within that window, only the latest pose is sent.
+- A timer flushes pending targets every ~0.0167 seconds (60 Hz). If there were multiple slider changes within that window, only the latest pose is sent.
+- The send loop honors CoreBluetooth backpressure (`canSendWriteWithoutResponse`) so target writes do not build up in a local queue.
 - When the joint-target characteristic supports it, the app uses `writeWithoutResponse` for lower latency; otherwise it falls back to `withResponse`.
 
-This design gives you responsive mid-slide control without spamming BLE with hundreds of writes per second.
+This design gives you responsive mid-slide control while keeping write pressure bounded to what the BLE stack can actually transmit.
 
 ## Control Ownership Model
 
 The firmware enforces a single “owner” at a time:
 
-- The app can always write target packets, but the arm will only apply them if the current connection is the owner.
+- The app only transmits joint-target packets when this connection is the owner.
 - Press **Take Control** to attempt to become the owner.
 - Press **Release** to relinquish ownership.
 

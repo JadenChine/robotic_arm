@@ -20,6 +20,7 @@ final class BLEManager: NSObject, ObservableObject {
     private var pendingJointTargetsDegrees: [Double] = Array(repeating: 0.0, count: 6)
     private var pendingJointTargetsDirty = false
     private var disconnectAfterNextWrite: Bool = false
+    private var jointWriteInFlight: Bool = false
 
     private var jointSendTimer: Timer?
     private var ownerPollTimer: Timer?
@@ -42,15 +43,17 @@ final class BLEManager: NSObject, ObservableObject {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
 
-        jointSendTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) {
-            [weak self] _ in
+        let jointTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.flushPendingJointTargetsIfNeeded()
         }
+        RunLoop.main.add(jointTimer, forMode: .common)
+        jointSendTimer = jointTimer
 
-        ownerPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
-            [weak self] _ in
+        let ownerTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollOwnerStatusIfPossible()
         }
+        RunLoop.main.add(ownerTimer, forMode: .common)
+        ownerPollTimer = ownerTimer
     }
 
     deinit {
@@ -141,20 +144,27 @@ final class BLEManager: NSObject, ObservableObject {
 
         pendingJointTargetsDegrees = jointAngles
         pendingJointTargetsDirty = true
-        flushJointTargetsNow()
     }
 
     private func flushPendingJointTargetsIfNeeded() {
         guard pendingJointTargetsDirty else { return }
+        guard hasControl else { return }
+
         guard let peripheral = connectedPeripheral,
               let characteristic = jointTargetsCharacteristic else {
             return
         }
 
         let packet = encodeJointTargetsPacket(pendingJointTargetsDegrees)
-        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            guard peripheral.canSendWriteWithoutResponse else { return }
+            peripheral.writeValue(packet, for: characteristic, type: .withoutResponse)
+        } else {
+            guard !jointWriteInFlight else { return }
+            jointWriteInFlight = true
+            peripheral.writeValue(packet, for: characteristic, type: .withResponse)
+        }
 
-        peripheral.writeValue(packet, for: characteristic, type: writeType)
         pendingJointTargetsDirty = false
     }
 
@@ -165,8 +175,21 @@ final class BLEManager: NSObject, ObservableObject {
         }
 
         let packet = encodeJointTargetsPacket(pendingJointTargetsDegrees)
-        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
-        peripheral.writeValue(packet, for: characteristic, type: writeType)
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            guard peripheral.canSendWriteWithoutResponse else {
+                pendingJointTargetsDirty = true
+                return
+            }
+            peripheral.writeValue(packet, for: characteristic, type: .withoutResponse)
+        } else {
+            guard !jointWriteInFlight else {
+                pendingJointTargetsDirty = true
+                return
+            }
+            jointWriteInFlight = true
+            peripheral.writeValue(packet, for: characteristic, type: .withResponse)
+        }
+
         pendingJointTargetsDirty = false
     }
 
@@ -207,6 +230,7 @@ final class BLEManager: NSObject, ObservableObject {
         hasControl = false
         lastControlCommand = .none
         pendingJointTargetsDirty = false
+        jointWriteInFlight = false
         isConnected = false
         disconnectAfterNextWrite = false
     }
@@ -335,6 +359,7 @@ extension BLEManager: CBPeripheralDelegate {
            jointTargetsCharacteristic != nil {
             connectionState = "Connected and ready"
             readOwnerStatus()
+            flushPendingJointTargetsIfNeeded()
         }
     }
 
@@ -380,6 +405,8 @@ extension BLEManager: CBPeripheralDelegate {
             lastControlCommand = .none
 
         case jointTargetsUUID:
+            jointWriteInFlight = false
+            flushPendingJointTargetsIfNeeded()
             break
 
         default:
@@ -423,5 +450,10 @@ extension BLEManager: CBPeripheralDelegate {
         @unknown default:
             return "Bluetooth state unavailable"
         }
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard peripheral.identifier == connectedPeripheral?.identifier else { return }
+        flushPendingJointTargetsIfNeeded()
     }
 }

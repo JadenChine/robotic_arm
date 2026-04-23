@@ -149,8 +149,6 @@ static void apply_ble_joint_targets(const arm_ble_event_t* event) {
 		g_joint_target_mdeg[joint_index] =
 			event->joint_target_deci_deg[joint_index] * 100;
 	}
-
-	g_control_tick_due = true;
 }
 
 // Applies safe-pose behavior after ownership timeout/disconnect.
@@ -160,27 +158,38 @@ static void apply_ble_safe_pose(void) {
 	}
 
 	mark_all_joint_outputs_dirty();
-	g_control_tick_due = true;
 	printf("ble safety event: commanding safe pose targets\n");
 }
 
 // Drains queued BLE events from core1 and applies them on core0.
 static void process_ble_events(void) {
 	arm_ble_event_t event;
+	arm_ble_event_t latest_target_event = {0};
+	bool has_latest_target_event = false;
+	bool saw_safe_pose_event = false;
 
 	while (queue_try_remove(&g_ble_event_queue, &event)) {
 		switch (event.type) {
 			case ARM_BLE_EVENT_SET_TARGETS:
-				apply_ble_joint_targets(&event);
+				if (!saw_safe_pose_event) {
+					latest_target_event = event;
+					has_latest_target_event = true;
+				}
 				break;
 
 			case ARM_BLE_EVENT_SAFE_POSE:
-				apply_ble_safe_pose();
+				saw_safe_pose_event = true;
 				break;
 
 			default:
 				break;
 		}
+	}
+
+	if (saw_safe_pose_event) {
+		apply_ble_safe_pose();
+	} else if (has_latest_target_event) {
+		apply_ble_joint_targets(&latest_target_event);
 	}
 }
 
