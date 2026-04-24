@@ -1,18 +1,347 @@
-#include "pico/stdlib.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 
+#include "ble/arm_ble_interface.h"
+#include "hal/servo_bus.h"
+#include "hardware/sync.h"
+#include "pico/multicore.h"
+#include "pico/stdlib.h"
+#include "pico/time.h"
+#include "pico/util/queue.h"
+#include "platform/servo_platform_config.h"
+
+#define ARM_JOINT_COUNT 6u
+
+#define CONTROL_TICK_HZ 20u
+#define CONTROL_MOVE_TIME_MS 90u
+#define CONTROL_RAW_DEADBAND 2
+
+#define BLE_EVENT_QUEUE_LENGTH 24u
+
+#define JOINT_DEFAULT_MIN_MDEG (-90000)
+#define JOINT_DEFAULT_MAX_MDEG (90000)
+
+
+typedef struct joint_config {
+	uint8_t servo_id;
+	int32_t min_mdeg;
+	int32_t max_mdeg;
+	int8_t direction;
+	int32_t offset_mdeg;
+} joint_config_t;
+
+// Register-style global targets for each joint in millidegrees.
+volatile int32_t g_joint_target_mdeg[ARM_JOINT_COUNT] = {0, 0, 0, 0, 0, 0};
+
+static const joint_config_t g_joint_configs[ARM_JOINT_COUNT] = {
+	{1u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{2u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{3u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{4u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{5u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{6u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+};
+
+static int16_t g_last_sent_raw_by_joint[ARM_JOINT_COUNT] = {0};
+static bool g_last_sent_valid_by_joint[ARM_JOINT_COUNT] = {false};
+static volatile bool g_control_tick_due = false;
+static queue_t g_ble_event_queue;
+
+// Clamps an integer value between a minimum and maximum range.
+static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
+	if (value < minimum) {
+		return minimum;
+	}
+	if (value > maximum) {
+		return maximum;
+	}
+	return value;
+}
+
+// Converts a servo bus status to a human-readable string.
+static const char* status_to_string(servo_bus_status_t status) {
+	switch (status) {
+		case SERVO_BUS_STATUS_OK:
+			return "ok";
+		case SERVO_BUS_STATUS_ERROR_NOT_INITIALIZED:
+			return "not initialized";
+		case SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT:
+			return "invalid argument";
+		case SERVO_BUS_STATUS_ERROR_TIMEOUT:
+			return "timeout";
+		case SERVO_BUS_STATUS_ERROR_OVERFLOW:
+			return "overflow";
+		case SERVO_BUS_STATUS_ERROR_UNSUPPORTED:
+			return "unsupported";
+		case SERVO_BUS_STATUS_ERROR_PROTOCOL:
+		default:
+			return "protocol error";
+	}
+}
+
+// Converts a servo bus backend type to a human-readable string.
+static const char* backend_to_string(servo_bus_backend_t backend) {
+	switch (backend) {
+		case SERVO_BUS_BACKEND_DIRECT_SERVO:
+			return "direct servo protocol";
+		case SERVO_BUS_BACKEND_XARM_CONTROLLER:
+		default:
+			return "xArm controller protocol";
+	}
+}
+
+// Applies joint-specific transformations to a target angle in millidegrees.
+static int32_t apply_joint_transform(const joint_config_t* config, int32_t target_mdeg) {
+	int32_t transformed_mdeg = clamp_i32(target_mdeg, config->min_mdeg, config->max_mdeg);
+
+	if (config->direction < 0) {
+		transformed_mdeg = -transformed_mdeg;
+	}
+
+	transformed_mdeg += config->offset_mdeg;
+	return clamp_i32(transformed_mdeg, -120000, 120000);
+}
+
+// Converts an angle in millidegrees to a raw servo position value.
+static int16_t mdeg_to_raw_position(int32_t mdeg) {
+	const int32_t clamped_mdeg = clamp_i32(mdeg, -120000, 120000);
+	const int32_t scaled = (clamped_mdeg * 500) / 120000;
+	const int32_t raw_position = clamp_i32(500 + scaled, 0, 1000);
+	return (int16_t)raw_position;
+}
+
+// Timer callback function to signal that a control tick is due.
+static bool control_tick_timer_callback(repeating_timer_t* timer) {
+	(void)timer;
+	g_control_tick_due = true;
+	return true;
+}
+
+// Consumes the control tick signal and resets its state.
+static bool consume_control_tick_due(void) {
+	const uint32_t irq_state = save_and_disable_interrupts();
+	const bool tick_due = g_control_tick_due;
+	g_control_tick_due = false;
+	restore_interrupts(irq_state);
+	return tick_due;
+}
+
+// Initializes joint targets to a safe default pose.
+static void initialize_joint_targets_to_safe_pose(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] = 0;
+		g_last_sent_valid_by_joint[joint_index] = false;
+	}
+}
+
+// Marks all joints as dirty so the next control tick forces an update.
+static void mark_all_joint_outputs_dirty(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_last_sent_valid_by_joint[joint_index] = false;
+	}
+}
+
+// Applies a BLE target update packet to the joint target registers.
+static void apply_ble_joint_targets(const arm_ble_event_t* event) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] =
+			event->joint_target_deci_deg[joint_index] * 100;
+	}
+}
+
+// Applies safe-pose behavior after ownership timeout/disconnect.
+static void apply_ble_safe_pose(void) {
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		g_joint_target_mdeg[joint_index] = 0;
+	}
+
+	mark_all_joint_outputs_dirty();
+	printf("ble safety event: commanding safe pose targets\n");
+}
+
+// Drains queued BLE events from core1 and applies them on core0.
+static void process_ble_events(void) {
+	arm_ble_event_t event;
+	arm_ble_event_t latest_target_event = {0};
+	bool has_latest_target_event = false;
+	bool saw_safe_pose_event = false;
+
+	while (queue_try_remove(&g_ble_event_queue, &event)) {
+		switch (event.type) {
+			case ARM_BLE_EVENT_SET_TARGETS:
+				if (!saw_safe_pose_event) {
+					latest_target_event = event;
+					has_latest_target_event = true;
+				}
+				break;
+
+			case ARM_BLE_EVENT_SAFE_POSE:
+				saw_safe_pose_event = true;
+				break;
+
+			default:
+				break;
+		}
+	}
+
+	if (saw_safe_pose_event) {
+		apply_ble_safe_pose();
+	} else if (has_latest_target_event) {
+		apply_ble_joint_targets(&latest_target_event);
+	}
+}
+
+// Sends joint target positions to the servo bus if they have changed significantly.
+static servo_bus_status_t send_joint_targets_if_dirty(void) {
+	uint8_t ids[ARM_JOINT_COUNT] = {0};
+	int16_t positions[ARM_JOINT_COUNT] = {0};
+	uint8_t dirty_joint_indices[ARM_JOINT_COUNT] = {0};
+	size_t dirty_count = 0;
+
+	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+		const joint_config_t* config = &g_joint_configs[joint_index];
+		const int32_t requested_mdeg = g_joint_target_mdeg[joint_index];
+		const int32_t transformed_mdeg = apply_joint_transform(config, requested_mdeg);
+		const int16_t raw_position = mdeg_to_raw_position(transformed_mdeg);
+
+		int32_t raw_difference = raw_position - g_last_sent_raw_by_joint[joint_index];
+		if (raw_difference < 0) {
+			raw_difference = -raw_difference;
+		}
+
+		if (!g_last_sent_valid_by_joint[joint_index] || raw_difference >= CONTROL_RAW_DEADBAND) {
+			ids[dirty_count] = config->servo_id;
+			positions[dirty_count] = raw_position;
+			dirty_joint_indices[dirty_count] = (uint8_t)joint_index;
+			++dirty_count;
+		}
+	}
+
+	if (dirty_count == 0) {
+		return SERVO_BUS_STATUS_OK;
+	}
+
+	const servo_bus_status_t status =
+		servo_bus_move_multiple(ids, positions, dirty_count, CONTROL_MOVE_TIME_MS);
+	if (status != SERVO_BUS_STATUS_OK) {
+		return status;
+	}
+
+	for (size_t dirty_index = 0; dirty_index < dirty_count; ++dirty_index) {
+		const uint8_t joint_index = dirty_joint_indices[dirty_index];
+		g_last_sent_raw_by_joint[joint_index] = positions[dirty_index];
+		g_last_sent_valid_by_joint[joint_index] = true;
+	}
+
+	return SERVO_BUS_STATUS_OK;
+}
+
+// Executes a single control tick, sending joint targets and handling errors.
+static void run_control_tick(void) {
+	static servo_bus_status_t last_status = SERVO_BUS_STATUS_OK;
+
+	const servo_bus_status_t status = send_joint_targets_if_dirty();
+	if (status != SERVO_BUS_STATUS_OK && status != last_status) {
+		printf("control tick send failed: %s (driver error %d)\n",
+		       status_to_string(status), servo_bus_get_last_driver_error());
+	}
+
+	if (status == SERVO_BUS_STATUS_OK && last_status != SERVO_BUS_STATUS_OK) {
+		printf("control tick send recovered\n");
+	}
+
+	last_status = status;
+}
+
+// Updates the heartbeat LED state based on control tick frequency.
+static void update_heartbeat(bool* led_on, uint32_t* tick_counter) {
+	const uint32_t ticks_per_toggle = (CONTROL_TICK_HZ >= 2u) ? (CONTROL_TICK_HZ / 2u) : 1u;
+
+	++(*tick_counter);
+	if (*tick_counter < ticks_per_toggle) {
+		return;
+	}
+
+	*tick_counter = 0;
+	*led_on = !(*led_on);
+	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, *led_on ? 1 : 0);
+}
+
+// Prints a startup banner with servo bus configuration details.
+static void print_banner(const servo_bus_config_t* config) {
+	printf("\nHiWonder Arm Joint Target Controller\n");
+	printf("  Backend       : %s\n", backend_to_string(config->backend));
+	printf("  UART index    : %u\n", config->uart_index);
+	printf("  UART baud     : %lu\n", (unsigned long)config->baud_rate);
+	printf("  UART TX pin   : %u\n", config->tx_pin);
+	printf("  UART RX pin   : %u\n", config->rx_pin);
+	printf("  Control tick  : %u Hz (timer IRQ scheduled)\n", CONTROL_TICK_HZ);
+	printf("  Move time ms  : %u\n", CONTROL_MOVE_TIME_MS);
+	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);
+	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
+	printf("  Target regs   : g_joint_target_mdeg[0..5] (millidegrees)\n");
+	printf("  BLE role      : peripheral (core1)\n");
+	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 targets=0xFFF3\n");
+	printf("  BLE timeout   : disabled (release/disconnect only)\n");
+}
+
+// Main entry point for the robotic arm firmware.
 int main(void) {
-	const uint LED_PIN = 16;
+	servo_bus_config_t config;
+	bool led_on = false;
+	uint32_t heartbeat_ticks = 0;
+	servo_bus_status_t init_status;
+	repeating_timer_t control_tick_timer;
 
 	stdio_init_all();
+	sleep_ms(1500);
 
-	gpio_init(LED_PIN);
-	gpio_set_dir(LED_PIN, GPIO_OUT);
+	gpio_init(SERVO_BUS_HEARTBEAT_LED_PIN);
+	gpio_set_dir(SERVO_BUS_HEARTBEAT_LED_PIN, GPIO_OUT);
+	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, 0);
+
+	servo_bus_get_default_config(&config);
+	print_banner(&config);
+
+	printf("initializing servo bus... ");
+	init_status = servo_bus_init(&config);
+	printf("%s\n", status_to_string(init_status));
+	if (init_status != SERVO_BUS_STATUS_OK) {
+		printf("servo bus initialization failed, control loop will stay idle\n");
+	}
+
+	initialize_joint_targets_to_safe_pose();
+	g_control_tick_due = true;
+
+	queue_init(&g_ble_event_queue, sizeof(arm_ble_event_t), BLE_EVENT_QUEUE_LENGTH);
+	if (arm_ble_prepare(&g_ble_event_queue, 0u)) {
+		multicore_launch_core1(arm_ble_core1_entry);
+		printf("ble core launched\n");
+	} else {
+		printf("ble setup failed: event queue unavailable\n");
+	}
+
+	const int64_t control_period_us = -((int64_t)(1000000u / CONTROL_TICK_HZ));
+	if (!add_repeating_timer_us(control_period_us, control_tick_timer_callback, NULL,
+					   &control_tick_timer)) {
+		printf("failed to start control tick timer\n");
+	} else {
+		printf("control timer started: %u Hz\n", CONTROL_TICK_HZ);
+	}
 
 	while (true) {
-		gpio_put(LED_PIN, 1);
-		sleep_ms(1000);
-		gpio_put(LED_PIN, 0);
-		sleep_ms(1000);
+		process_ble_events();
+
+		if (consume_control_tick_due()) {
+			if (init_status == SERVO_BUS_STATUS_OK) {
+				run_control_tick();
+			}
+			update_heartbeat(&led_on, &heartbeat_ticks);
+		}
+
+		tight_loop_contents();
 	}
 
 	return 0;

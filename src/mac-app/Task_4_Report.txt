@@ -1,0 +1,197 @@
+Task Description: 
+Build a wireless control path for the robotic arm using Bluetooth Low Energy (BLE), and a simple desktop app that can connect and command joint targets in real time. 
+ 
+ 
+Main Idea: 
+The Pico W runs as a BLE peripheral (the arm). 
+A macOS app runs as a BLE central (the controller). 
+The app streams 6 joint target angles. 
+The firmware converts those targets into the same servo-bus commands from Task 2. 
+ 
+ 
+What Was Made In This Task: 
+1) Pico W BLE firmware interface (embedded) 
+A custom BLE service that exposes: 
+A control-point characteristic to take/release control 
+An owner-status characteristic so the app can confirm it owns control 
+A joint-target format that accepts 6 target angles per packet 
+A single-owner “control ownership” scheme so only one controller can drive the arm at a time. 
+A safe-pose behavior that centers the arm on release or owner disconnect. 
+A cross-core event queue so BLE and servo control stay decoupled and safe. 
+ 
+2) macOS SwiftUI app (desktop controller) 
+Scans for the arm by BLE service and lists discovered devices. 
+Connects, discovers the arm, and shows connection state. 
+“Take Control” / “Release” buttons that write the BLE control point. 
+Six sliders (one per joint) that stream target angles while dragging. 
+A “Center Pose” button (sets all targets to 0°). 
+Rate-limited sending and backpressure handling so slider drags stay responsive without flooding the BLE stack. 
+ 
+SwiftUI MacOS Application 
+ 
+Goal: 
+Enable interactive, cable-free control that is: 
+Responsive (feels “live” while dragging sliders) 
+Safe (only one owner at a time, safe pose on disconnect) 
+Robust (does not stall the firmware control loop; handles BLE disconnects) 
+ 
+ 
+System Overview (High-Level Architecture): 
+Embedded (Pico W firmware) 
+Core 1 (BLE core): 
+Runs BTstack 
+Handles GATT reads/writes 
+Enforces ownership 
+Pushes decoded joint targets into a queue 
+Core 0 (main control core): 
+Runs the servo-bus control loop at 20 Hz 
+Drains the BLE queue and updates joint target registers 
+Sends multi-servo move commands over UART to the controller board 
+ 
+Desktop (macOS app) 
+`ContentView.swift`: 
+UI: scan/connect buttons, device list, control buttons, and joint sliders 
+Updates target angles continuously while dragging 
+`BLEManager.swift`: 
+CoreBluetooth central manager and peripheral handling 
+Discovers and stores the needed characteristics 
+Encodes joint target packets and writes them at a controlled rate 
+Polls owner status periodically so the UI stays accurate 
+ 
+ 
+BLE Interface and Protocol: 
+Advertising: 
+The Pico W advertises a 16-bit service UUID `0xFFF0`. 
+Device name: `ArmCtrl`. 
+The firmware allows up to 2 concurrent BLE connections. If a third device tries to connect, it is rejected. 
+ 
+GATT layout (custom service `0xFFF0`): 
+1) `0xFFF1` — Control Point (write-with-response) 
+Purpose: request control ownership changes. 
+Commands: 
+`0x01` = TAKE_CONTROL 
+`0x02` = RELEASE_CONTROL 
+ 
+2) `0xFFF2` — Owner Status (read) 
+Purpose: answers “Do I own control on this connection?” 
+Returns 1 byte: 
+`0x01` if the reading connection is the owner 
+`0x00` otherwise 
+ 
+3) `0xFFF3` — Joint Targets (write / write-without-response) 
+Purpose: stream joint target angles. 
+Payload is always 12 bytes total: 
+6 × `int16` little-endian 
+Units are deci-degrees (0.1°): `value = round(deg * 10)` 
+The macOS app clamps to ±90.0° (±900 deci-deg) 
+ 
+ 
+Ownership / Safety Model: 
+Single-owner behavior: 
+Multiple centrals can connect, but only one is the “owner” (real controller) at a time. 
+TAKE_CONTROL is “last writer wins” (ownership transfers immediately). 
+ 
+Write rules: 
+Joint target writes from a non-owner are treated as a no-op and return success. 
+This avoids noisy BLE errors if a second client is connected and sending data. 
+RELEASE_CONTROL is owner-only. 
+If a non-owner tries to release, the write is rejected. 
+ 
+Safe pose: 
+When the owner releases control, the firmware: 
+Clears the owner 
+Starts a “safe pose” event 
+Sets all targets to 0° and forces an update so the arm returns to center 
+When the owner disconnects unexpectedly, the firmware also starts a safe pose. 
+ 
+ 
+End-to-End Data Flow (Slider → Servo Motion): 
+1) Slider movement (macOS) 
+The user drags a joint slider. 
+The UI updates a 6 angle array (degrees). 
+The app marks the latest pose “pending”. 
+ 
+2) Packet encoding + sending (macOS) 
+A 60 Hz timer sends the latest pending pose. 
+Angles are converted to `int16` deci-degrees and packed into 12 bytes. 
+The app writes this packet to `0xFFF3`. 
+The app prefers “write without response” for low latency. 
+ 
+3) BLE receive + queueing (Pico W, core 1) 
+The firmware receives the `0xFFF3` write. 
+If this connection is not the owner: ignore. 
+If it is the owner: 
+Validate packet length (must be 12 bytes) 
+Decode 6 angles 
+Starts an `ARM_BLE_EVENT_SET_TARGETS` event into a `queue_t` 
+ 
+4) Applying targets (Pico W, core 0) 
+The main loop drains the BLE queue. 
+If multiple target updates arrive quickly, only the latest one is applied (keeps things responsive). 
+Targets are stored in millidegrees in `g_joint_target_mdeg[0..5]`. 
+ 
+5) Servo update (Pico W, core 0 control tick) 
+A repeating timer schedules a 20 Hz control tick. 
+Each tick: 
+Clamps each joint to its allowed range 
+Applies joint direction/offset settings 
+Converts degrees to raw servo positions (0..1000) 
+Uses a small deadband so tiny changes don’t spam the bus 
+Sends one multi-servo move packet over UART (controller backend) 
+ 
+ 
+Verification / How It Was Tested: 
+Firmware bring-up checks: 
+Verified the Pico W boots, starts the servo bus, launches BLE on core 1, and begins advertising `0xFFF0` as `ArmCtrl`. 
+Verified that connecting/disconnecting prints expected status messages and that owner disconnect triggers safe pose. 
+ 
+Mac app functional testing: 
+Verified scanning finds `ArmCtrl` (service `0xFFF0`). 
+Verified connect → service discovery → characteristic discovery transitions to “Connected and ready”. 
+Verified “Take Control” changes the owner status to OWNER. 
+Verified slider motion creates continuous, smooth arm movement. 
+Verified “Release” starts a safe pose (arm returns to center). 
+Verified “Disconnect” attempts a release first, then disconnects. 
+
+Flow Chart 1: BLE Control Loop (Mac ↔ Pico W) — Simplified
+
+flowchart TD
+    A["Pico W boots"] --> B["Start servo control (core0)"]
+    A --> C["Start BLE + advertise 0xFFF0 (core1)"]
+
+    D["Mac app starts"] --> E["Scan + connect to ArmCtrl"]
+    E --> F["Discover FFF1/FFF2/FFF3"]
+    F --> G{"Take control?"}
+    G -- Yes --> H["Write TAKE_CONTROL (FFF1)"]
+    H --> I["Owner = this connection (FFF2)"]
+    G -- No --> J["View-only (not owner)"]
+
+    I --> K["Stream joint targets (FFF3)"]
+    K --> L{"Owner write?"}
+    L -- No --> M["Ignore targets"]
+    L -- Yes --> N["Queue targets to core0"]
+    N --> O["Apply latest targets + send servo move"]
+    O --> P{"Release or disconnect?"}
+    P -- Release --> Q["Write RELEASE_CONTROL (FFF1)"]
+    P -- Disconnect --> R["Owner disconnected"]
+    Q --> S["Safe pose (targets -> 0°)"]
+    R --> S
+    S --> O
+
+
+Flow Chart 2: macOS App Behavior — Simplified
+
+flowchart TD
+    A["Launch"] --> B{"Bluetooth powered on?"}
+    B -- No --> C["Show not-ready state"]
+    B -- Yes --> D["Scan for 0xFFF0"]
+    D --> E["Connect to selected device"]
+    E --> F["Discover FFF1/FFF2/FFF3"]
+    F --> G["Show ready UI"]
+
+    G --> H{"User action"}
+    H -- Take Control --> I["Write TAKE_CONTROL (FFF1)"]
+    H -- Release --> J["Write RELEASE_CONTROL (FFF1)"]
+    H -- Move sliders --> K["Update angles + send targets (FFF3)"]
+    H -- Center pose --> L["Set all angles to 0° + send"]
+    H -- Disconnect --> M["Release (best effort) + disconnect"]

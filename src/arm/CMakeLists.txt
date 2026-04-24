@@ -10,6 +10,11 @@ cmake_minimum_required(VERSION 3.13)
 set(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/../pico-sdk")
 include(${CMAKE_CURRENT_LIST_DIR}/../pico-sdk/external/pico_sdk_import.cmake)
 
+# Default to Pico W so CYW43 + BTstack BLE are available.
+if (NOT DEFINED PICO_BOARD)
+    set(PICO_BOARD pico_w)
+endif()
+
 # Define project name and enabled languages.
 project(robotic_arm C CXX ASM)
 set(CMAKE_C_STANDARD 11)
@@ -25,15 +30,21 @@ pico_sdk_init()
 
 # Collect project source files:
 # - main.c at the project root
-# - all .c files inside src/
+# - all C/C++ files inside src/
 # CONFIGURE_DEPENDS tells CMake to re-check this glob when files are added/removed.
-file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/main.c"
     "${CMAKE_CURRENT_LIST_DIR}/src/*.c"
+    "${CMAKE_CURRENT_LIST_DIR}/src/*.cpp"
 )
 
 # Create the firmware executable from the collected source files.
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+
+# Generate a C header from the custom BLE GATT definition.
+pico_btstack_make_gatt_header(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src/ble/arm_control_service.gatt
+)
 
 
 # ============================================================================
@@ -43,6 +54,12 @@ add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 # Link required Pico libraries.
 target_link_libraries(${PROJECT_NAME}
     pico_stdlib
+    hardware_uart
+    pico_multicore
+    pico_util
+    pico_btstack_ble
+    pico_btstack_cyw43
+    pico_cyw43_arch_none
 )
 
 # Add include directories used by this target.
