@@ -18,9 +18,13 @@ What was modeled:
 
 Coordinate system + conventions:
 Uses the standard “Z-up” style coordinate system:
-- Origin at the robot base: (0,0,0)
+- Origin at the ground reference: (0,0,0)
 - XY plane is the floor/ground reference
 - +Z points upward
+
+In the current simulation frame:
+- The shoulder/base joint is located at (0, 0, 65) mm
+- The ground collision lower bound is Z = 0 mm
 
 Joints (4 total):
 1. base_yaw rotates about Z (spins the whole arm left/right)
@@ -37,10 +41,10 @@ Total reach (fully stretched):
 Total reach = L1 + L2 + L3 = 101 + 95 + 168 = 364 mm
 
 Joint limits (degrees):
-- Joint 1 (base_yaw): [-180, +180]
+- Joint 1 (base_yaw): [-120, +120]
 - Joint 2 (shoulder_pitch): [-90, +90]
-- Joint 3 (elbow_1_pitch): [-90, +90]
-- Joint 4 (elbow_2_pitch): [-90, +90]
+- Joint 3 (elbow_1_pitch): [-120, +120]
+- Joint 4 (elbow_2_pitch): [-120, +120]
 
 Kinematics math (forward kinematics):
 
@@ -48,6 +52,7 @@ Implemented via Robotics Toolbox ETS chain:
 The model uses an Elementary Transform Sequence (ETS) which builds the arm out of rotations for joints and translations for link lengths.
 
 The chain is:
+0. Translate base to shoulder location in world: Tz(65)
 1. Rotate about Z by joint 1: Rz(theta1)
 2. Rotate about Y by -90 degrees (constant): Ry(-pi/2)
 3. Rotate about Y by joint 2: Ry(theta2)
@@ -58,7 +63,7 @@ The chain is:
 8. Translate along local X by L3: Tx(L3)
 
 So the full transform is basically:
-T = Rz(theta1) * Ry(-pi/2) * Ry(theta2) * Tx(L1) * Ry(theta3) * Tx(L2) * Ry(theta4) * Tx(L3)
+T = Tz(65) * Rz(theta1) * Ry(-pi/2) * Ry(theta2) * Tx(L1) * Ry(theta3) * Tx(L2) * Ry(theta4) * Tx(L3)
 
 Manual calculations: 
 To make sure the toolbox setup isn’t wrong, the code also computes the joint positions manually in get_all_joint_positions().
@@ -85,6 +90,8 @@ phi3 = phi2 - theta4
 x3 = x2 + L3*cos(theta1)*cos(phi3)
 y3 = y2 + L3*sin(theta1)*cos(phi3)
 z3 = z2 + L3*sin(phi3)
+
+All joint/world positions are then shifted by the base/shoulder offset (+65 mm in Z).
 
 Flow charts:
 (In this spot was a mermaid flow chart that broke down the exact code behavior of the sims)

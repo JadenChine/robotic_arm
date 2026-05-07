@@ -27,6 +27,7 @@ Date: January 2026
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from typing import Optional, List, Tuple, Callable
 import sys
 from pathlib import Path
@@ -56,6 +57,7 @@ class ArmViewer:
         'end_effector': '#E63946',   # Red for end effector
         'ground': '#b7f3c7',         # Subtle green for ground plane
         'bound': '#f3b7b7',          # Subtle red for lower bound plane
+        'pedestal': '#87CEEB',       # Sky blue for base pedestal
         'ground_grid': '#888888',    # Darker gray for grid
         'axis_x': '#E63946',         # Red for X axis
         'axis_y': '#2A9D8F',         # Green for Y axis
@@ -94,6 +96,7 @@ class ArmViewer:
         self._end_effector_point = None
         self._position_text = None
         self._status_text = None
+        self._pedestal = None
         
     def _setup_figure(self):
         """Set up the matplotlib figure and axes."""
@@ -140,8 +143,8 @@ class ArmViewer:
         # Draw ground plane
         self._draw_ground_plane()
 
-        # Draw lower bound plane
-        self._draw_bound_plane()
+        # Draw a static base pedestal (to visually support the elevated shoulder joint)
+        self._draw_base_pedestal(width_mm=115.0)
         
         # Draw coordinate axes at origin
         self._draw_origin_axes()
@@ -151,10 +154,10 @@ class ArmViewer:
 
         
     def _draw_ground_plane(self):
-        """Draw a subtle reference plane at z = 0."""
+        """Draw a subtle ground plane at the configured ground Z."""
         ax = self._ax
         reach = self.arm.total_reach
-        plane_z = 0.0  # visual reference at z = 0
+        plane_z = float(self.arm.config.ground_plane_z)
         
         # Create grid for ground plane with ~20 mm spacing (capped to avoid huge grids)
         grid_size = max(10, int(np.ceil(reach / 60.0)))
@@ -174,32 +177,84 @@ class ArmViewer:
         zz = np.full_like(xx, plane_z)
         ax.plot_surface(xx, yy, zz, alpha=0.08, color=self.COLORS['ground'])
 
-    def _draw_bound_plane(self):
-        """Draw a subtle red plane at the lower bound (z = -65)."""
-        ax = self._ax
-        reach = self.arm.total_reach
-        plane_z = -65.0
-
-        grid_size = max(10, int(np.ceil(reach / 60.0)))
-        x = np.linspace(-reach, reach, grid_size * 2 + 1)
-        y = np.linspace(-reach, reach, grid_size * 2 + 1)
-
-        for xi in x:
-            ax.plot([xi, xi], [-reach, reach], [plane_z, plane_z],
-                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
-        for yi in y:
-            ax.plot([-reach, reach], [yi, yi], [plane_z, plane_z],
-                   color=self.COLORS['ground_grid'], alpha=0.25, linewidth=0.5)
-
-        xx, yy = np.meshgrid([-reach, reach], [-reach, reach])
-        zz = np.full_like(xx, plane_z)
-        ax.plot_surface(xx, yy, zz, alpha=0.08, color=self.COLORS['bound'])
-
     def _disable_pane_grids(self):
         """Hide the auto-generated pane grid lines but keep panes and labels visible."""
         for axis in (self._ax.xaxis, self._ax.yaxis, self._ax.zaxis):
             axis._axinfo['grid']['linewidth'] = 0.0
             axis._axinfo['grid']['color'] = (1.0, 1.0, 1.0, 0.0)
+
+    def _draw_base_pedestal(self, width_mm: float = 115.0):
+        """Draw a static octagonal pedestal between ground_z and the shoulder height.
+
+        The pedestal is a regular octagon extruded along +Z, centered under the
+        arm's base (x, y). It is drawn once and never updated.
+
+        Args:
+            width_mm: Overall width of the octagon (vertex-to-vertex) in mm.
+        """
+        ax = self._ax
+
+        base_x, base_y, base_z = self.arm.config.base_position
+        ground_z = float(self.arm.config.ground_plane_z)
+        top_z = float(base_z)
+        bottom_z = float(ground_z)
+
+        if top_z <= bottom_z:
+            return
+
+        radius = float(width_mm) / 2.0
+        angles = np.linspace(0, 2 * np.pi, 8, endpoint=False) + (np.pi / 8.0)
+
+        verts_xy = np.column_stack([
+            base_x + radius * np.cos(angles),
+            base_y + radius * np.sin(angles),
+        ])
+
+        bottom = [(float(x), float(y), bottom_z) for x, y in verts_xy]
+        top = [(float(x), float(y), top_z) for x, y in verts_xy]
+
+        faces: List[List[Tuple[float, float, float]]] = []
+        faces.append(bottom)         # bottom cap
+        faces.append(top[::-1])      # top cap (reverse winding so normal points up)
+
+        for i in range(8):
+            j = (i + 1) % 8
+            faces.append([bottom[i], bottom[j], top[j], top[i]])  # side quad
+
+        # Simple per-face shading (improves depth cues without changing geometry)
+        base_rgb = np.array(plt.matplotlib.colors.to_rgb(self.COLORS['pedestal']), dtype=float)
+        light_dir = np.array([1.0, -0.8, 2.2], dtype=float)
+        light_dir /= np.linalg.norm(light_dir)
+
+        facecolors = []
+        for face in faces:
+            p0 = np.array(face[0], dtype=float)
+            p1 = np.array(face[1], dtype=float)
+            p2 = np.array(face[2], dtype=float)
+
+            n = np.cross(p1 - p0, p2 - p0)
+            n_norm = np.linalg.norm(n)
+            if n_norm > 1e-9:
+                n = n / n_norm
+            intensity = max(0.0, float(np.dot(n, light_dir)))
+
+            # Keep the base sky-blue color, just modulate brightness
+            brightness = 0.55 + 0.45 * intensity
+            facecolors.append(tuple(np.clip(base_rgb * brightness, 0.0, 1.0)))
+
+        pedestal = Poly3DCollection(
+            faces,
+            facecolors=facecolors,
+            edgecolors=(0.0, 0.0, 0.0, 0.85),
+            linewidths=0.9,
+        )
+        # Transparency often causes incorrect painter's-algorithm ordering in mplot3d.
+        # Keep the pedestal opaque so arm segments in front remain visible.
+        pedestal.set_alpha(1.0)
+        pedestal.set_zsort('average')
+        pedestal.set_zorder(1)
+        ax.add_collection3d(pedestal)
+        self._pedestal = pedestal
         
     def _draw_origin_axes(self):
         """Draw coordinate axes at the origin."""
@@ -363,7 +418,8 @@ class ArmViewer:
                 [zs[i], zs[i+1]],
                 color=self.COLORS['link'],
                 linewidth=4,
-                solid_capstyle='round'
+                solid_capstyle='round',
+                zorder=10,
             )
             self._link_lines.append(line)
             
@@ -371,18 +427,24 @@ class ArmViewer:
         self._joint_points = ax.scatter(
             xs[:-1], ys[:-1], zs[:-1],
             c=self.COLORS['joint'],
-            s=50,
+            s=64,
             marker='o',
-            depthshade=True
+            depthshade=False,
+            edgecolors='white',
+            linewidths=0.8,
+            zorder=50,
         )
         
         # Draw end effector
         self._end_effector_point = ax.scatter(
             [xs[-1]], [ys[-1]], [zs[-1]],
             c=self.COLORS['end_effector'],
-            s=80,
+            s=92,
             marker='o',
-            depthshade=True
+            depthshade=False,
+            edgecolors='white',
+            linewidths=0.8,
+            zorder=60,
         )
         
         # Update info text

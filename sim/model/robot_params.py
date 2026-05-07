@@ -120,7 +120,7 @@ class RobotConfig:
     joints: List[JointConfig]
     links: List[LinkConfig]
     base_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    ground_plane_z: float = -65.0
+    ground_plane_z: float = 0.0
     enable_ground_collision: bool = True
     
     def __post_init__(self):
@@ -178,14 +178,17 @@ class RobotConfig:
 
 # 3-Link Arm Configuration
 # This configuration represents a 4-DOF arm with 3 links:
-# - Joint 1 (Base Yaw): Rotation about Z-axis, 360° range - part of shoulder
+# - Joint 1 (Base Yaw): Rotation about Z-axis, ±120° range - part of shoulder
 # - Joint 2 (Shoulder Pitch): Rotation about Y-axis (pitch), -90° to 90° - part of shoulder
-#       0° = straight up, negative = forward, positive = backward
-# - Joint 3 (Elbow 1): First elbow, rotation about Y-axis, ±90° range
-# - Joint 4 (Elbow 2): Second elbow, rotation about Y-axis, ±90° range
+#       0° = straight up, +90° = forward, -90° = backward
+# - Joint 3 (Elbow 1): First elbow, rotation about Y-axis, ±120° range
+# - Joint 4 (Elbow 2): Second elbow, rotation about Y-axis, ±120° range
 #
 # The shoulder is a compound joint (joints 1 & 2 together)
 # Links: 101, 95, and 168 mm, total reach 364 mm
+
+_DEFAULT_SHOULDER_HEIGHT_MM = 65.0
+
 
 DEFAULT_3_LINK_CONFIG = RobotConfig(
     name="3-Link Arm",
@@ -194,8 +197,8 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             name="base_yaw",
             joint_type=JointType.REVOLUTE,
             axis='z',
-            limit_lower=-np.pi,           # -180 degrees
-            limit_upper=np.pi,            # +180 degrees
+            limit_lower=-np.radians(120.0),  # -120 degrees
+            limit_upper=np.radians(120.0),   # +120 degrees
             home_position=0.0,
             max_velocity=np.pi,           # 180 deg/s
             description="Shoulder joint part 1: Base rotation about Z-axis (XY plane rotation)"
@@ -214,8 +217,8 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             name="elbow_1_pitch",
             joint_type=JointType.REVOLUTE,
             axis='y',
-            limit_lower=-np.pi/2,         # -90 degrees
-            limit_upper=np.pi/2,          # +90 degrees
+            limit_lower=-np.radians(120.0),  # -120 degrees
+            limit_upper=np.radians(120.0),   # +120 degrees
             home_position=0.0,
             max_velocity=np.pi,
             description="First elbow joint - positive bends forward, negative bends backward"
@@ -224,8 +227,8 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             name="elbow_2_pitch",
             joint_type=JointType.REVOLUTE,
             axis='y',
-            limit_lower=-np.pi/2,         # -90 degrees
-            limit_upper=np.pi/2,          # +90 degrees
+            limit_lower=-np.radians(120.0),  # -120 degrees
+            limit_upper=np.radians(120.0),   # +120 degrees
             home_position=0.0,
             max_velocity=np.pi,
             description="Second elbow joint - positive bends forward, negative bends backward"
@@ -248,8 +251,8 @@ DEFAULT_3_LINK_CONFIG = RobotConfig(
             description="Hand/end effector link - connects second elbow to end effector"
         ),
     ],
-    base_position=(0.0, 0.0, 0.0),
-    ground_plane_z=-65.0,
+    base_position=(0.0, 0.0, _DEFAULT_SHOULDER_HEIGHT_MM),
+    ground_plane_z=0.0,
     enable_ground_collision=True
 )
 

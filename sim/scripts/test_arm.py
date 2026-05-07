@@ -32,10 +32,10 @@ def test_home_position():
     arm.go_home()
     
     pos = arm.get_end_effector_position()
-    expected = np.array([0, 0, 364])
+    expected = np.array([0, 0, 429])
     
     print(f"End effector at home: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (0, 0, 364)")
+    print(f"Expected: (0, 0, 429)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -55,10 +55,10 @@ def test_horizontal_position():
     arm.set_joint_angles([0, np.pi/2, 0, 0])
     
     pos = arm.get_end_effector_position()
-    expected = np.array([364, 0, 0])
+    expected = np.array([364, 0, 65])
     
     print(f"End effector horizontal: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (364, 0, 0)")
+    print(f"Expected: (364, 0, 65)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -77,10 +77,10 @@ def test_base_rotation():
     arm.set_joint_angles([np.pi/2, np.pi/2, 0, 0])
     
     pos = arm.get_end_effector_position()
-    expected = np.array([0, 364, 0])
+    expected = np.array([0, 364, 65])
     
     print(f"End effector (base=90°): ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
-    print(f"Expected: (0, 364, 0)")
+    print(f"Expected: (0, 364, 65)")
     
     if np.allclose(pos, expected, atol=1e-6):
         print("✓ PASSED")
@@ -94,21 +94,41 @@ def test_joint_limits():
     """Test that joint limits are enforced."""
     print("\n=== Test: Joint Limits ===")
     arm = ThreeLinkArm()
-    
-    # Try to set angles beyond limits (above +90°)
-    arm.set_joint_angles([0, 2.0, 0, 0])  # Shoulder above +π/2
-    
+
+    # Base yaw is limited to ±120°
+    arm.set_joint_angles([np.radians(200.0), 0, 0, 0])
     clamped = arm.current_angles
-    print(f"Attempted shoulder angle: 2.0 rad (115°)")
-    print(f"Clamped shoulder angle: {clamped[1]:.4f} rad ({np.degrees(clamped[1]):.1f}°)")
-    print(f"Upper limit: +π/2 rad (+90°)")
-    
-    if np.isclose(clamped[1], np.pi/2, atol=1e-6):
-        print("✓ PASSED")
-        return True
-    else:
+    print(f"Attempted base_yaw: 200°")
+    print(f"Clamped base_yaw: {np.degrees(clamped[0]):.1f}°")
+    if not np.isclose(clamped[0], np.radians(120.0), atol=1e-6):
         print("✗ FAILED")
         return False
+
+    # Shoulder pitch is limited to ±90°
+    arm.set_joint_angles([0, np.radians(115.0), 0, 0])
+    clamped = arm.current_angles
+    print(f"Attempted shoulder_pitch: 115°")
+    print(f"Clamped shoulder_pitch: {np.degrees(clamped[1]):.1f}°")
+    if not np.isclose(clamped[1], np.pi / 2, atol=1e-6):
+        print("✗ FAILED")
+        return False
+
+    # Elbows are limited to ±120°
+    arm.set_joint_angles([0, 0, np.radians(-200.0), np.radians(200.0)])
+    clamped = arm.current_angles
+    print(f"Attempted elbows: [-200°, +200°]")
+    print(
+        f"Clamped elbows: [{np.degrees(clamped[2]):.1f}°, {np.degrees(clamped[3]):.1f}°]"
+    )
+    if not (
+        np.isclose(clamped[2], np.radians(-120.0), atol=1e-6)
+        and np.isclose(clamped[3], np.radians(120.0), atol=1e-6)
+    ):
+        print("✗ FAILED")
+        return False
+
+    print("✓ PASSED")
+    return True
 
 
 def test_ground_collision():
@@ -162,7 +182,7 @@ def test_fk_consistency():
         [0, 0, 0, 0],                         # Home position (up)
         [np.pi/4, np.pi/6, np.pi/6, np.pi/6], # Tilted forward with elbows
         [-np.pi/4, 0, np.pi/4, -np.pi/4],     # Straight up with elbow bends
-        [np.pi, np.pi/4, np.pi/4, np.pi/4],   # Rotated with shoulder forward
+        [np.radians(110.0), np.pi/4, np.pi/4, np.pi/4],   # Rotated with shoulder forward
     ]
     
     all_passed = True

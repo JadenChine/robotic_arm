@@ -42,14 +42,14 @@ def get_comprehensive_waypoints():
     add(0.0, np.pi / 6, np.pi / 8, 0.0)
 
     # Phase 1: Sweeps around the base with moderate extension
-    for yaw in np.linspace(-np.pi / 1.1, np.pi / 1.1, 7):
+    for yaw in np.linspace(-np.radians(120.0), np.radians(120.0), 7):
         add(yaw, np.pi / 6, np.pi / 7, np.pi / 7)
 
     # Phase 2: Reach tests in cardinal directions and a fold
     add(0.0, np.pi / 3, np.pi / 8, np.pi / 8)             # forward
     add(np.pi / 2, np.pi / 3, np.pi / 8, np.pi / 8)       # right
     add(-np.pi / 2, np.pi / 3, np.pi / 8, np.pi / 8)      # left
-    add(np.pi, np.pi / 3, np.pi / 8, np.pi / 8)           # backward
+    add(np.radians(120.0), np.pi / 3, np.pi / 8, np.pi / 8)  # rearward (limited by yaw)
     add(0.0, 0.0, np.pi / 3, np.pi / 4)                   # upward curl
     add(0.0, -np.pi / 4, -np.pi / 5, np.pi / 5)           # back fold
 

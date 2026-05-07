@@ -6,7 +6,6 @@ This repository houses the code and files related to SD403_Sp26_05. This design 
 
 - `src/`: Embedded and hardware-facing code.
 - `sim/`: Python simulation, visualization, and simulation tests.
-- `Design_Doc.md`: Design and task breakdown.
 
 ## Simulation Quick Start
 
@@ -46,42 +45,30 @@ The `build/` directory will typically contain the CMake cache and generated buil
 
 ## Initial Servo Control Bootstrap
 
-The arm firmware now includes the first-stage low-level HiWonder bus-servo integration under `src/arm/`.
+The arm firmware includes a backend-agnostic servo-bus HAL and an application-layer joint-target control loop under `src/arm/`.
 
 ### Architecture
 
 - `src/arm/src/platform/`: Pico-specific UART transport and hardware defaults
 - `src/arm/src/drivers/`: internal HiWonder packet protocol driver
 - `src/arm/src/hal/`: C-facing hardware abstraction layer for the rest of the arm firmware
-- `src/arm/main.c`: USB serial keyboard smoke test plus heartbeat LED
+- `src/arm/main.c`: 6-joint periodic target controller + heartbeat LED; BLE runs on core1 on Pico W
+
+For detailed firmware behavior and the BLE protocol, see `src/arm/README.md` and `src/arm/docs/BLE_README.md`.
 
 The reference code in `src/HiBusServo/` is used only as source material during the port. The long-term arm firmware should depend on the `src/arm/` implementation instead.
 
 ### Default hardware assumptions
 
-- Servo bus UART index: `1`
-- Servo bus baud rate: `115200`
-- Servo bus TX pin: `GPIO 4`
-- Servo bus RX pin: `GPIO 5`
-- Demo servo ID: `1`
+- Servo bus backend: controller mode
+- Servo bus UART index: `0`
+- Servo bus baud rate: `9600`
+- Servo bus TX pin: `GPIO 0` (GP0)
+- Servo bus RX pin: `GPIO 1` (GP1)
+- Default servo ID (for low-level tools): `1`
 - Heartbeat LED pin: `GPIO 16`
 
 These defaults are centralized in `src/arm/src/platform/servo_platform_config.h`.
-
-### Console smoke test commands
-
-Connect to the Pico USB serial console and type:
-
-- `h` or `?`: print help
-- `p`: ping servo `1`
-- `c`: move servo `1` to center
-- `a`: step left
-- `d`: step right
-- `s`: stop
-- `r`: read current position
-- `v`: read voltage
-- `t`: read temperature
-- `e`: print the last low-level driver error
 
 ### Environment requirements
 

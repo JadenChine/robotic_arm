@@ -40,7 +40,13 @@ The app expects the arm peripheral to expose service `0xFFF0` with these charact
 - `0xFFF3` — Joint Targets (write)
   - Payload is 12 bytes total: 6 × `int16` little-endian
   - Units are deci-degrees (0.1°): value = `round(deg * 10)`
-  - Range enforced by the app: `[-900, +900]` deci-degrees (i.e. `[-90.0°, +90.0°]`)
+  - Range enforced by the app is per-joint (deci-degrees):
+    - Joint 1: `[-1200, +50]` ([-120.0°, +10.0°])
+    - Joint 2: `[-1200, +1200]` ([-120.0°, +120.0°])
+    - Joint 3: `[-1200, +1200]` ([-120.0°, +120.0°])
+    - Joint 4: `[-1200, +1200]` ([-120.0°, +120.0°])
+    - Joint 5: `[-900, +900]` ([-90.0°, +90.0°])
+    - Joint 6: `[-1200, +1200]` ([-120.0°, +120.0°])
 
 ## How Slider Updates Are Sent (Mid-Drag)
 
@@ -108,7 +114,11 @@ The UI shows a human-readable `State` value driven by CoreBluetooth events.
   - Connect button per row.
 
 - **Joint Targets**
-  - Six sliders, each in `[-90.0°, +90.0°]` with 0.1° step.
+  - Six sliders with 0.1° step and per-joint ranges:
+    - Joint 1: -120.0° to +10.0°
+    - Joint 2–4: -120.0° to +120.0°
+    - Joint 5: -90.0° to +90.0°
+    - Joint 6: -120.0° to +120.0°
   - The value label updates live while dragging.
 
 ## Run
