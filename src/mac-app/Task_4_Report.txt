@@ -83,7 +83,13 @@ Purpose: stream joint target angles.
 Payload is always 12 bytes total: 
 6 × `int16` little-endian 
 Units are deci-degrees (0.1°): `value = round(deg * 10)` 
-The macOS app clamps to ±90.0° (±900 deci-deg) 
+The macOS app clamps per joint (deci-degrees): 
+- Joint 1: [-1200, +50]  ([-120.0°, +5.0°])
+- Joint 2: [-1200, +1200] ([-120.0°, +120.0°])
+- Joint 3: [-1200, +1200] ([-120.0°, +120.0°])
+- Joint 4: [-1200, +1200] ([-120.0°, +120.0°])
+- Joint 5: [-900, +900]   ([-90.0°, +90.0°])
+- Joint 6: [-1200, +1200] ([-120.0°, +120.0°])
  
  
 Ownership / Safety Model: 
@@ -128,7 +134,7 @@ Starts an `ARM_BLE_EVENT_SET_TARGETS` event into a `queue_t`
 4) Applying targets (Pico W, core 0) 
 The main loop drains the BLE queue. 
 If multiple target updates arrive quickly, only the latest one is applied (keeps things responsive). 
-Targets are stored in millidegrees in `g_joint_target_mdeg[0..5]`. 
+Targets are stored in deci-degrees (0.1°) in `g_joint_target_deci_deg[0..5]`. 
  
 5) Servo update (Pico W, core 0 control tick) 
 A repeating timer schedules a 20 Hz control tick. 

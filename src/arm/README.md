@@ -121,7 +121,7 @@ Path: src/arm/main.c
 Responsibilities:
 
 - heartbeat LED liveness loop
-- six global joint target registers (millidegrees)
+- six global joint target registers (deci-degrees, 0.1°)
 - repeating timer interrupt that schedules control ticks
 - periodic dirty-setpoint transmission through HAL
 
@@ -132,9 +132,9 @@ Path: src/arm/src/ble
 Responsibilities:
 
 - expose BLE GATT service for remote target writes
-- enforce single-owner control token semantics
+- enforce single-owner control semantics
 - queue cross-core BLE events for core0 application loop
-- trigger safe-pose fallback on owner disconnect/timeout
+- trigger safe-pose fallback on owner release/disconnect
 
 Key files:
 
@@ -181,9 +181,15 @@ The application now runs as a periodic controller rather than a keyboard-driven 
 
 ### Target Registers
 
-- `g_joint_target_mdeg[0..5]` holds desired joint angles in millidegrees.
+- `g_joint_target_deci_deg[0..5]` holds desired joint angles in deci-degrees (0.1° units).
 - Register index maps to one arm joint.
-- Current default per-joint software limits are -90 deg to +90 deg.
+- Current per-joint software limits (degrees):
+  - Joint 1: -120.0° to +10.0°
+  - Joint 2: -120.0° to +120.0°
+  - Joint 3: -120.0° to +120.0°
+  - Joint 4: -120.0° to +120.0° (direction reversed in software)
+  - Joint 5: -90.0° to +90.0°
+  - Joint 6: -120.0° to +120.0°
 
 ### Timing Model
 
@@ -197,7 +203,7 @@ On each scheduled control tick, the application:
 
 1. snapshots all 6 target registers,
 2. applies per-joint clamp, direction, and offset,
-3. converts millidegrees to protocol raw position (0..1000),
+3. converts deci-degrees (0.1°) to protocol raw position (0..1000),
 4. applies a deadband against last-sent raw values,
 5. sends only dirty joints in one `servo_bus_move_multiple(...)` command.
 
@@ -209,7 +215,7 @@ Startup behavior:
 Current app-level defaults in `main.c`:
 
 - `CONTROL_TICK_HZ = 20`
-- `CONTROL_MOVE_TIME_MS = 120`
+- `CONTROL_MOVE_TIME_MS = 90`
 - `CONTROL_RAW_DEADBAND = 2`
 
 These values are intended as a stable starting point for future human-in-the-loop control (encoders/sliders).
@@ -256,7 +262,7 @@ Custom service UUIDs (Bluetooth base form):
 
 - service: `0xFFF0`
 - control point: `0xFFF1` (write)
-- owner token: `0xFFF2` (read, dynamic)
+- owner status: `0xFFF2` (read, dynamic)
 - joint targets: `0xFFF3` (write/write-without-response)
 
 ### Control Commands (`0xFFF1`)
@@ -264,11 +270,11 @@ Custom service UUIDs (Bluetooth base form):
 - `0x01`: take control (steals immediately)
 - `0x02`: release control
 
-### Owner Token (`0xFFF2`)
+### Owner Status (`0xFFF2`)
 
-- 4-byte little-endian `uint32`
-- `0` means no active owner
-- non-zero value changes whenever ownership is granted
+- 1 byte
+- `0x01` if the reading connection is currently the owner
+- `0x00` otherwise
 
 ### Joint Target Packet (`0xFFF3`)
 
@@ -280,16 +286,16 @@ Binary payload (12 bytes total):
 
 Firmware conversion path:
 
-1. deci-degrees -> millidegrees (`value * 100`)
-2. write to `g_joint_target_mdeg[0..5]`
+1. decode joint targets as deci-degrees (0.1°)
+2. write to `g_joint_target_deci_deg[0..5]`
 3. existing 20 Hz control loop applies clamp/transform/deadband and transmits via UART backend
 
 ### Ownership Rules
 
 - up to 2 BLE centrals can connect simultaneously
 - only current owner can write joint targets
-- non-owner target writes are rejected by GATT
-- if owner disconnects or stops sending updates for timeout window (`BLE_OWNER_TIMEOUT_MS`), ownership clears and safe pose (all zero targets) is commanded
+- non-owner target writes are ignored (ACK'd as success) and do not change targets
+- safe pose (all zeros) is commanded on owner release or owner disconnect
 
 ## Wiring Guidance
 
@@ -351,7 +357,7 @@ If BLE clients cannot control motion:
 1. Confirm board is Pico W and build used `-DPICO_BOARD=pico_w`.
 2. Confirm central writes `0x01` to `0xFFF1` before slider packets.
 3. Confirm joint packets are exactly 12 bytes (`6 x int16`, little-endian, 0.1 deg units).
-4. Confirm active owner has not timed out.
+4. Confirm UI shows OWNER (owner status reads `0x01`).
 
 If movement is jerky or bus-heavy:
 
@@ -369,7 +375,7 @@ If only some IDs move:
 
 If the arm does not react to changing target registers:
 
-- verify updates are writing the intended index in `g_joint_target_mdeg[0..5]`
+- verify updates are writing the intended index in `g_joint_target_deci_deg[0..5]`
 - verify values remain within configured software limits
 
 ## Maintenance Checklist

@@ -20,28 +20,34 @@
 
 #define BLE_EVENT_QUEUE_LENGTH 24u
 
-#define JOINT_DEFAULT_MIN_MDEG (-90000)
-#define JOINT_DEFAULT_MAX_MDEG (90000)
+#define JOINT_DEFAULT_MIN_DECI_DEG (-1200)
+#define JOINT_DEFAULT_MAX_DECI_DEG (1200)
+
+#define JOINT1_MIN_DECI_DEG JOINT_DEFAULT_MIN_DECI_DEG
+#define JOINT1_MAX_DECI_DEG (100)
+
+#define JOINT5_MIN_DECI_DEG (-900)
+#define JOINT5_MAX_DECI_DEG (900)
 
 
 typedef struct joint_config {
 	uint8_t servo_id;
-	int32_t min_mdeg;
-	int32_t max_mdeg;
+	int32_t min_deci_deg;
+	int32_t max_deci_deg;
 	int8_t direction;
-	int32_t offset_mdeg;
+	int32_t offset_deci_deg;
 } joint_config_t;
 
-// Register-style global targets for each joint in millidegrees.
-volatile int32_t g_joint_target_mdeg[ARM_JOINT_COUNT] = {0, 0, 0, 0, 0, 0};
+// Register-style global targets for each joint in deci-degrees (0.1°).
+volatile int32_t g_joint_target_deci_deg[ARM_JOINT_COUNT] = {0, 0, 0, 0, 0, 0};
 
 static const joint_config_t g_joint_configs[ARM_JOINT_COUNT] = {
-	{1u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
-	{2u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
-	{3u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
-	{4u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
-	{5u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
-	{6u, JOINT_DEFAULT_MIN_MDEG, JOINT_DEFAULT_MAX_MDEG, 1, 0},
+	{1u, JOINT1_MIN_DECI_DEG,        JOINT1_MAX_DECI_DEG,         1, 0},
+	{2u, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG,  1, 0},
+	{3u, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG,  1, 0},
+	{4u, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG, -1, 0},
+	{5u, JOINT5_MIN_DECI_DEG,        JOINT5_MAX_DECI_DEG,         1, 0},
+	{6u, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG,  1, 0},
 };
 
 static int16_t g_last_sent_raw_by_joint[ARM_JOINT_COUNT] = {0};
@@ -92,22 +98,23 @@ static const char* backend_to_string(servo_bus_backend_t backend) {
 	}
 }
 
-// Applies joint-specific transformations to a target angle in millidegrees.
-static int32_t apply_joint_transform(const joint_config_t* config, int32_t target_mdeg) {
-	int32_t transformed_mdeg = clamp_i32(target_mdeg, config->min_mdeg, config->max_mdeg);
+// Applies joint-specific transformations to a target angle in deci-degrees (0.1°).
+static int32_t apply_joint_transform(const joint_config_t* config, int32_t target_deci_deg) {
+	int32_t transformed_deci_deg = clamp_i32(target_deci_deg, config->min_deci_deg, config->max_deci_deg);
 
 	if (config->direction < 0) {
-		transformed_mdeg = -transformed_mdeg;
+		transformed_deci_deg = -transformed_deci_deg;
 	}
 
-	transformed_mdeg += config->offset_mdeg;
-	return clamp_i32(transformed_mdeg, -120000, 120000);
+	transformed_deci_deg += config->offset_deci_deg;
+	return clamp_i32(transformed_deci_deg, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG);
 }
 
-// Converts an angle in millidegrees to a raw servo position value.
-static int16_t mdeg_to_raw_position(int32_t mdeg) {
-	const int32_t clamped_mdeg = clamp_i32(mdeg, -120000, 120000);
-	const int32_t scaled = (clamped_mdeg * 500) / 120000;
+// Converts an angle in deci-degrees (0.1°) to a raw servo position value.
+// Mapping is defined such that -120.0° -> 0, 0.0° -> 500, +120.0° -> 1000.
+static int16_t deci_deg_to_raw_position(int32_t deci_deg) {
+	const int32_t clamped_deci_deg = clamp_i32(deci_deg, JOINT_DEFAULT_MIN_DECI_DEG, JOINT_DEFAULT_MAX_DECI_DEG);
+	const int32_t scaled = (clamped_deci_deg * 500) / JOINT_DEFAULT_MAX_DECI_DEG;
 	const int32_t raw_position = clamp_i32(500 + scaled, 0, 1000);
 	return (int16_t)raw_position;
 }
@@ -131,7 +138,7 @@ static bool consume_control_tick_due(void) {
 // Initializes joint targets to a safe default pose.
 static void initialize_joint_targets_to_safe_pose(void) {
 	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
-		g_joint_target_mdeg[joint_index] = 0;
+		g_joint_target_deci_deg[joint_index] = 0;
 		g_last_sent_valid_by_joint[joint_index] = false;
 	}
 }
@@ -146,15 +153,14 @@ static void mark_all_joint_outputs_dirty(void) {
 // Applies a BLE target update packet to the joint target registers.
 static void apply_ble_joint_targets(const arm_ble_event_t* event) {
 	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
-		g_joint_target_mdeg[joint_index] =
-			event->joint_target_deci_deg[joint_index] * 100;
+		g_joint_target_deci_deg[joint_index] = event->joint_target_deci_deg[joint_index];
 	}
 }
 
 // Applies safe-pose behavior after ownership timeout/disconnect.
 static void apply_ble_safe_pose(void) {
 	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
-		g_joint_target_mdeg[joint_index] = 0;
+		g_joint_target_deci_deg[joint_index] = 0;
 	}
 
 	mark_all_joint_outputs_dirty();
@@ -202,9 +208,9 @@ static servo_bus_status_t send_joint_targets_if_dirty(void) {
 
 	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
 		const joint_config_t* config = &g_joint_configs[joint_index];
-		const int32_t requested_mdeg = g_joint_target_mdeg[joint_index];
-		const int32_t transformed_mdeg = apply_joint_transform(config, requested_mdeg);
-		const int16_t raw_position = mdeg_to_raw_position(transformed_mdeg);
+		const int32_t requested_deci_deg = g_joint_target_deci_deg[joint_index];
+		const int32_t transformed_deci_deg = apply_joint_transform(config, requested_deci_deg);
+		const int16_t raw_position = deci_deg_to_raw_position(transformed_deci_deg);
 
 		int32_t raw_difference = raw_position - g_last_sent_raw_by_joint[joint_index];
 		if (raw_difference < 0) {
@@ -281,7 +287,7 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Move time ms  : %u\n", CONTROL_MOVE_TIME_MS);
 	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);
 	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
-	printf("  Target regs   : g_joint_target_mdeg[0..5] (millidegrees)\n");
+	printf("  Target regs   : g_joint_target_deci_deg[0..5] (deci-degrees, 0.1 deg units)\n");
 	printf("  BLE role      : peripheral (core1)\n");
 	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 targets=0xFFF3\n");
 	printf("  BLE timeout   : disabled (release/disconnect only)\n");

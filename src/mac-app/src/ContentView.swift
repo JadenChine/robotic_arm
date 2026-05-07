@@ -4,6 +4,15 @@ struct ContentView: View {
     @EnvironmentObject var bleManager: BLEManager
     @State private var jointAngles: [Double] = Array(repeating: 0.0, count: 6)
 
+    private let jointRangesDegrees: [(min: Double, max: Double)] = [
+        (min: -120.0, max: 10.0),
+        (min: -120.0, max: 120.0),
+        (min: -120.0, max: 120.0),
+        (min: -120.0, max: 120.0),
+        (min: -90.0, max: 90.0),
+        (min: -120.0, max: 120.0),
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Robotic Arm BLE Control")
@@ -86,6 +95,8 @@ struct ContentView: View {
                                     .monospacedDigit()
                             }
 
+                            let range = jointRangesDegrees[index]
+
                             Slider(
                                 value: Binding(
                                     get: { jointAngles[index] },
@@ -96,7 +107,7 @@ struct ContentView: View {
                                         bleManager.updateJointTargetsDegrees(updatedAngles)
                                     }
                                 ),
-                                in: -90.0...90.0,
+                                in: range.min...range.max,
                                 step: 0.1
                             )
                         }

@@ -39,6 +39,15 @@ final class BLEManager: NSObject, ObservableObject {
     private let ownerTokenUUID = CBUUID(string: "FFF2")
     private let jointTargetsUUID = CBUUID(string: "FFF3")
 
+    private let jointLimitsDeciDegrees: [(min: Int, max: Int)] = [
+        (min: -1200, max: 100),
+        (min: -1200, max: 1200),
+        (min: -1200, max: 1200),
+        (min: -1200, max: 1200),
+        (min: -900, max: 900),
+        (min: -1200, max: 1200),
+    ]
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
@@ -196,8 +205,10 @@ final class BLEManager: NSObject, ObservableObject {
     private func encodeJointTargetsPacket(_ jointAngles: [Double]) -> Data {
         var data = Data(capacity: 12)
 
-        for angle in jointAngles {
-            let deciDegrees = Int16(max(-900, min(900, Int(round(angle * 10.0)))))
+        for (index, angle) in jointAngles.enumerated() {
+            let limits = jointLimitsDeciDegrees[index]
+            let deciDegreesInt = max(limits.min, min(limits.max, Int(round(angle * 10.0))))
+            let deciDegrees = Int16(deciDegreesInt)
             var littleEndianValue = deciDegrees.littleEndian
             withUnsafeBytes(of: &littleEndianValue) { bytes in
                 data.append(contentsOf: bytes)
