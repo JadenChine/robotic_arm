@@ -6,6 +6,7 @@
 #include "arm_control_service.h"
 #include "btstack.h"
 #include "pico/cyw43_arch.h"
+#include "pico/rand.h"
 #include "pico/stdlib.h"
 
 #define ARM_BLE_MAX_CONNECTIONS 2u
@@ -30,6 +31,24 @@ static btstack_packet_callback_registration_t g_hci_event_callback_registration;
 
 static uint32_t now_ms(void) {
   return to_ms_since_boot(get_absolute_time());
+}
+
+static void set_random_static_ble_address(void) {
+  bd_addr_t random_addr;
+  const uint32_t r0 = get_rand_32();
+  const uint32_t r1 = get_rand_32();
+
+  random_addr[0] = (uint8_t)(r0 & 0xffu);
+  random_addr[1] = (uint8_t)((r0 >> 8) & 0xffu);
+  random_addr[2] = (uint8_t)((r0 >> 16) & 0xffu);
+  random_addr[3] = (uint8_t)((r0 >> 24) & 0xffu);
+  random_addr[4] = (uint8_t)(r1 & 0xffu);
+  random_addr[5] = (uint8_t)((r1 >> 8) & 0xffu);
+
+  // Set two MSBs to 1 to mark this as a *static random* address.
+  random_addr[5] = (uint8_t)((random_addr[5] & 0x3fu) | 0xc0u);
+
+  gap_random_address_set(random_addr);
 }
 
 static arm_ble_connection_slot_t* find_connection(hci_con_handle_t connection_handle) {
@@ -339,6 +358,8 @@ static void arm_ble_setup(void) {
   l2cap_init();
   sm_init();
   sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
+
+  set_random_static_ble_address();
 
   att_server_init(profile_data, att_read_callback, att_write_callback);
 

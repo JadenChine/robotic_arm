@@ -57,6 +57,7 @@ target_link_libraries(${PROJECT_NAME}
     hardware_uart
     pico_multicore
     pico_util
+    pico_rand
     pico_btstack_ble
     pico_btstack_cyw43
     pico_cyw43_arch_none
