@@ -224,7 +224,7 @@ class GroundCollisionConstraint(Constraint):
     
     def __init__(
         self, 
-        ground_z: float = -65.0,
+        ground_z: float = 0.0,
         severity: ConstraintSeverity = ConstraintSeverity.CRITICAL
     ):
         """
@@ -464,7 +464,7 @@ class ConstraintManager:
 def create_default_constraint_manager(
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
-    ground_z: float = -65.0,
+    ground_z: float = 0.0,
     max_reach: float = 400.0
 ) -> ConstraintManager:
     """

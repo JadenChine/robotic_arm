@@ -32,15 +32,16 @@ This simulation models a 3-link serial manipulator with 4 degrees of freedom:
 **Units**: All distances are specified in millimeters (mm); angles are in degrees/radians as noted.
 
 **Coordinate System**
-- **Origin**: Robot base at (0, 0, 0)
-- **XY plane**: Ground/base plane (floor plane, the robot is built vertically on top of the ground)
-- **Z-axis**: Vertical plane (3rd dimension extending upward from the floor)
+- **Origin**: Ground reference at (0, 0, 0)
+- **XY plane**: Ground plane (floor plane)
+- **Z-axis**: Vertical axis (positive upward)
+- **Shoulder/Base joint location**: (0, 0, 65) mm by default
 
 **Joints**
-- **Joint 1 - Base Yaw (Shoulder Part 1)**: ±180° rotation about the Z axis
+- **Joint 1 - Base Yaw (Shoulder Part 1)**: ±120° rotation about the Z axis
 - **Joint 2 - Shoulder Pitch (Shoulder Part 2)**: ±90° pitch (0° is vertical/up, ±90° is horizontal along the ±X direction)
-- **Joint 3 - Elbow 1**: ±90° articulation (first elbow joint)
-- **Joint 4 - Elbow 2**: ±90° articulation (second elbow joint)
+- **Joint 3 - Elbow 1**: ±120° articulation (first elbow joint)
+- **Joint 4 - Elbow 2**: ±120° articulation (second elbow joint)
 
 **Note**: The shoulder is a compound 2-in-1 joint (joints 1 & 2 at the same physical location at the base).
 
@@ -71,8 +72,8 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 #### Joint 1: Base Yaw (Shoulder - Part 1)
 - **Type**: Revolute
 - **Axis of Rotation**: Z-axis (vertical)
-- **Location**: Base origin (0, 0, 0)
-- **Range**: -180° to +180° (-π to +π radians)
+- **Location**: Shoulder/base joint location (0, 0, 65)
+- **Range**: -120° to +120° (-2π/3 to +2π/3 radians)
 - **Home Position**: 0° (arm oriented toward +X axis)
 - **Motion Description**: 
   - **Positive rotation**: Counter-clockwise when viewed from above (right-hand rule about +Z)
@@ -83,13 +84,13 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 #### Joint 2: Shoulder Pitch (Shoulder - Part 2)
 - **Type**: Revolute
 - **Axis of Rotation**: Y-axis (after base yaw rotation)
-- **Location**: Base origin (0, 0, 0) - **same location as Joint 1**
+- **Location**: Shoulder/base joint location (0, 0, 65) - **same location as Joint 1**
 - **Range**: -90° to +90° (-π/2 to π/2 radians)
 - **Home Position**: 0° ( radians) - arm vertical
 - **Motion Description**:
   - **0° position**: Link 1 points straight up (+Z direction, vertical)
   - **90° position**: Link 1 points forward horizontally (+X direction assuming yaw is 0°)
-  - **-90° position**: Link 1 points backward horizonatlly (-X direction assuming yaw is 0°)
+  - **-90° position**: Link 1 points backward horizontally (-X direction assuming yaw is 0°)
   - **Positive rotation**: From vertical (+Z) toward forward horizontal in +X direction
   - **Negative rotation**: From vertical (+Z) toward backward horizontal in -X direction
   - **Constraint**: Upper hemisphere operation (-90° to 90° where 0° is vertical, cannot go below ground)
@@ -99,7 +100,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 - **Type**: Revolute
 - **Axis of Rotation**: Y-axis (parallel to shoulder pitch axis)
 - **Location**: End of Link 1 (101 mm from base along Link 1's direction)
-- **Range**: -90° to +90° (-π/2 to +π/2 radians)
+- **Range**: -120° to +120° (-2π/3 to +2π/3 radians)
 - **Home Position**: 0° (Link 2 extends straight along Link 1 direction)
 - **Motion Description**:
   - **0° position**: Link 2 fully extended in line with Link 1 (no bend)
@@ -112,7 +113,7 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 - **Type**: Revolute
 - **Axis of Rotation**: Y-axis (parallel to other pitch axes, after base yaw rotation)
 - **Location**: End of Link 2 (196 mm from base through Link 1 and Link 2)
-- **Range**: -90° to +90° (-π/2 to +π/2 radians)
+- **Range**: -120° to +120° (-2π/3 to +2π/3 radians)
 - **Home Position**: 0° (Link 3 extends straight along Link 2 direction)
 - **Motion Description**:
   - **0° position**: Link 3 fully extended in line with Link 2 (no bend)
@@ -133,18 +134,18 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 
 ### Workspace Description
 **Reachable Workspace**:
-- **Shape**: Hemisphere (upper half) in the positive Z plane with a 364 mm radius
+- **Shape**: Approximately an upper-space sector with a 364 mm radius from the shoulder joint, limited in azimuth by the ±120° base yaw range
 - **Maximum radius**: 364 mm (all links fully extended)
 - **Minimum radius**: ~101 mm (approximately one link length when fully folded back)
-- **Volume**: Constrained by ground plane (Z ≥ -65 mm enforced)
+- **Volume**: Constrained by ground plane (Z ≥ 0 mm enforced)
 
 
 ### Visualization Reference
 **Key Configurations**:
-1. **Home Position** [0°, 0°, 0°, 0°]: Arm vertical, fully extended vertical 
-2. **Vertical Up** [any°, 0°, 0°, 0°]: Arm pointing straight up
-3. **Maximum Reach** [any, 90°, 0°, 0°]: ~364 mm horizontal (points to +X if yaw is 0°)
-4. **Folded** [0°, 0°, 80°, 80°]: Compact forward bend, end effector roughly (151, 0, -41) mm (stays above the -65 mm floor limit)
+1. **Home Position** [0°, 0°, 0°, 0°]: Arm vertical, fully extended (end effector at z = 65 + 364 = 429 mm)
+2. **Vertical Up** [any yaw within ±120°, 0°, 0°, 0°]: Arm pointing straight up
+3. **Maximum Reach** [any yaw within ±120°, 90°, 0°, 0°]: ~364 mm horizontal (points to +X if yaw is 0°; end effector at z ≈ 65 mm)
+4. **Folded** [0°, 0°, 80°, 80°]: Compact forward bend, end effector roughly (151, 0, 24) mm (stays above the 0 mm floor limit)
 
 
 ## Constraints
@@ -153,10 +154,10 @@ Base (Shoulder) → Link 1 (Upper Arm) → Link 2 (Forearm) → Link 3 (Hand/Too
 Each joint has enforced limits. The `set_joint_angles()` method automatically clamps values.
 
 ### Ground Collision
-The arm is prevented from going below Z = -65 mm. The constraint system detects when any joint or the end effector would penetrate this lowered ground plane (allowing 65 mm of clearance below the XY plane).
+The arm is prevented from going below Z = 0 mm. The constraint system detects when any joint or the end effector would penetrate the ground plane.
 
 ### Workspace
-The maximum workspace is a hemisphere of radius 364 mm centered at the origin, offset by the -65 mm floor limit.
+The maximum workspace is an upper-space sector of radius 364 mm centered at the shoulder joint location (0, 0, 65) mm, constrained by the floor limit Z ≥ 0 and the base yaw limit of ±120°.
 
 
 ## Project Structure
@@ -184,10 +185,10 @@ pipenv run python sim/scripts/manual_control.py
 ```
 
 Use the sliders to control each joint:
-- `base_yaw`: Base rotation (-180° to 180°) - Shoulder Part 1
+- `base_yaw`: Base rotation (-120° to 120°) - Shoulder Part 1
 - `shoulder_pitch`: Shoulder elevation (-90° to 90°) - Shoulder Part 2
-- `elbow_1_pitch`: First elbow bend (-90° to 90°)
-- `elbow_2_pitch`: Second elbow bend (-90° to 90°)
+- `elbow_1_pitch`: First elbow bend (-120° to 120°)
+- `elbow_2_pitch`: Second elbow bend (-120° to 120°)
 
 **Mode 2: Automated Demo**
 ```bash
@@ -211,7 +212,7 @@ arm = ThreeLinkArm()
 print(arm.summary())
 
 # Set joint angles (radians) - [base_yaw, shoulder_pitch, elbow_1, elbow_2]
-arm.set_joint_angles([0, np.pi/2, 0, 0])  # Home position
+arm.set_joint_angles([0, np.pi/2, 0, 0])  # Horizontal forward reach
 
 # Get end effector position
 pos = arm.get_end_effector_position()

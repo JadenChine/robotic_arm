@@ -5,15 +5,16 @@ This module defines the core robotic arm model using the Robotics Toolbox for Py
 The arm is configured as a 4-DOF serial manipulator with 3 links:
     - Joint 1 (Base Yaw): Z-axis rotation for XY-plane positioning - part of shoulder
     - Joint 2 (Shoulder Pitch): Y-axis rotation for elevation (upper hemisphere only) - part of shoulder
-    - Joint 3 (Elbow 1): Y-axis rotation, first elbow joint (±90°)
-    - Joint 4 (Elbow 2): Y-axis rotation, second elbow joint (±90°)
+    - Joint 3 (Elbow 1): Y-axis rotation, first elbow joint (±120°)
+    - Joint 4 (Elbow 2): Y-axis rotation, second elbow joint (±120°)
 
 The shoulder is a compound 2-in-1 joint (joints 1 & 2 together at the base).
 
 The coordinate system follows:
-    - XY plane: Ground/base plane
+    - XY plane: Ground plane
     - Z-axis: Positive upward
-    - Origin: Robot base at (0, 0, 0)
+    - Origin: Ground reference at (0, 0, 0)
+    - Shoulder/base joint location: (0, 0, 65) mm by default
 
 All lengths are expressed in millimeters. The default links are 101, 95, and
 168 mm, giving a total reach of 364 mm when fully extended.
@@ -22,7 +23,7 @@ Usage:
     from sim.model.arm_model import ThreeLinkArm
     
     arm = ThreeLinkArm()
-    arm.set_joint_angles([0, np.pi/2, 0, 0])  # Home position
+    arm.set_joint_angles([0, np.pi/2, 0, 0])  # Horizontal forward reach
     end_effector_pos = arm.forward_kinematics()
 
 Author: Senior Design Team
@@ -134,7 +135,7 @@ class ThreeLinkArm:
         # Build the Elementary Transform Sequence
         # 
         # ETS chain (all transforms are relative to the previous local frame):
-        # - Base at origin (0, 0, 0)
+        # - Base/shoulder located at config.base_position in the world frame
         # - Joint 1 (Base Yaw): Rotates entire arm in XY plane about Z-axis
         # - Constant -90° Y-rotation: Aligns local X-axis with vertical direction
         #   (required so ET.tx translations extend upward when shoulder_pitch = 0°)
@@ -142,7 +143,12 @@ class ThreeLinkArm:
         # - All links extend along local X-axis via ET.tx()
         # - Elbows bend in pitch plane (positive = forward flexion)
         
+        base_x, base_y, base_z = self.config.base_position
+
         ets = (
+            # Place the shoulder joint in the world frame
+            ET.tx(base_x) * ET.ty(base_y) * ET.tz(base_z) *
+
             # Joint 1: Base yaw rotation (rotates in ground plane)
             ET.Rz(qlim=[j1.limit_lower, j1.limit_upper]) *
             
@@ -285,7 +291,8 @@ class ThreeLinkArm:
         else:
             angles = np.asarray(angles)
             
-        positions = [np.array([0.0, 0.0, 0.0])]  # Base position (shoulder location)
+        base_pos = np.asarray(self.config.base_position, dtype=float)
+        positions = [base_pos.copy()]  # Base position (shoulder location)
         
         # Get link lengths
         L1 = self.config.links[0].length
@@ -310,7 +317,7 @@ class ThreeLinkArm:
         x1 = L1 * np.cos(theta1) * np.cos(effective_pitch)
         y1 = L1 * np.sin(theta1) * np.cos(effective_pitch)
         z1 = L1 * np.sin(effective_pitch)
-        positions.append(np.array([x1, y1, z1]))
+        positions.append(base_pos + np.array([x1, y1, z1]))
         
         # Position after second link (at second elbow)
         # Elbow 1 subtracts from the pitch (positive elbow = bend more forward)
@@ -318,7 +325,7 @@ class ThreeLinkArm:
         x2 = x1 + L2 * np.cos(theta1) * np.cos(pitch_after_elbow1)
         y2 = y1 + L2 * np.sin(theta1) * np.cos(pitch_after_elbow1)
         z2 = z1 + L2 * np.sin(pitch_after_elbow1)
-        positions.append(np.array([x2, y2, z2]))
+        positions.append(base_pos + np.array([x2, y2, z2]))
         
         # End effector position (after third link)
         # Elbow 2 subtracts from the cumulative pitch (positive elbow = bend more forward)
@@ -326,7 +333,7 @@ class ThreeLinkArm:
         x3 = x2 + L3 * np.cos(theta1) * np.cos(pitch_after_elbow2)
         y3 = y2 + L3 * np.sin(theta1) * np.cos(pitch_after_elbow2)
         z3 = z2 + L3 * np.sin(pitch_after_elbow2)
-        positions.append(np.array([x3, y3, z3]))
+        positions.append(base_pos + np.array([x3, y3, z3]))
         
         return positions
     
