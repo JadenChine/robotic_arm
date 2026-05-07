@@ -2,6 +2,20 @@ import Combine
 import CoreBluetooth
 import Foundation
 
+enum ArmControlMode: UInt8, Equatable {
+    case joint = 0
+    case cartesian = 1
+
+    var displayName: String {
+        switch self {
+        case .joint:
+            return "Joint"
+        case .cartesian:
+            return "Cartesian"
+        }
+    }
+}
+
 final class BLEManager: NSObject, ObservableObject {
     @Published var discoveredPeripherals: [CBPeripheral] = []
     @Published var connectionState: String = "Bluetooth not ready"
@@ -9,6 +23,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var isConnected: Bool = false
     @Published var hasControl: Bool = false
     @Published var lastError: String = ""
+    @Published var controlMode: ArmControlMode = .joint
 
     private var central: CBCentralManager?
     private var connectedPeripheral: CBPeripheral?
@@ -16,20 +31,25 @@ final class BLEManager: NSObject, ObservableObject {
     private var controlPointCharacteristic: CBCharacteristic?
     private var ownerStatusCharacteristic: CBCharacteristic?
     private var jointTargetsCharacteristic: CBCharacteristic?
+    private var cartesianTargetsCharacteristic: CBCharacteristic?
 
     private var pendingJointTargetsDegrees: [Double] = Array(repeating: 0.0, count: 6)
+    private var pendingCartesianTargetsMM: [Double] = [0.0, 0.0, 429.0]
     private var pendingJointTargetsDirty = false
+    private var pendingCartesianTargetsDirty = false
     private var disconnectAfterNextWrite: Bool = false
     private var jointWriteInFlight: Bool = false
+    private var cartesianWriteInFlight: Bool = false
 
-    private var jointSendTimer: Timer?
+    private var targetSendTimer: Timer?
     private var ownerPollTimer: Timer?
 
-    private enum LastControlCommand {
+    private enum LastControlCommand: Equatable {
         case none
         case take
         case release
         case releaseAndDisconnect
+        case setMode(ArmControlMode)
     }
 
     private var lastControlCommand: LastControlCommand = .none
@@ -38,6 +58,7 @@ final class BLEManager: NSObject, ObservableObject {
     private let controlPointUUID = CBUUID(string: "FFF1")
     private let ownerTokenUUID = CBUUID(string: "FFF2")
     private let jointTargetsUUID = CBUUID(string: "FFF3")
+    private let cartesianTargetsUUID = CBUUID(string: "FFF4")
 
     private let jointLimitsDeciDegrees: [(min: Int, max: Int)] = [
         (min: -1200, max: 100),
@@ -48,15 +69,21 @@ final class BLEManager: NSObject, ObservableObject {
         (min: -1200, max: 1200),
     ]
 
+    private let cartesianLimitsMM: [(min: Int, max: Int)] = [
+        (min: -364, max: 364),
+        (min: -364, max: 364),
+        (min: 0, max: 429),
+    ]
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
 
-        let jointTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.flushPendingJointTargetsIfNeeded()
+        let targetTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.flushPendingTargetsIfNeeded()
         }
-        RunLoop.main.add(jointTimer, forMode: .common)
-        jointSendTimer = jointTimer
+        RunLoop.main.add(targetTimer, forMode: .common)
+        targetSendTimer = targetTimer
 
         let ownerTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.pollOwnerStatusIfPossible()
@@ -66,7 +93,7 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     deinit {
-        jointSendTimer?.invalidate()
+        targetSendTimer?.invalidate()
         ownerPollTimer?.invalidate()
     }
 
@@ -145,6 +172,12 @@ final class BLEManager: NSObject, ObservableObject {
         peripheral.writeValue(payload, for: characteristic, type: .withResponse)
     }
 
+    func setControlMode(_ mode: ArmControlMode) {
+        controlMode = mode
+        guard hasControl else { return }
+        writeControlModeNow(mode)
+    }
+
     func updateJointTargetsDegrees(_ jointAngles: [Double]) {
         guard jointAngles.count == 6 else {
             lastError = "Joint array must contain exactly 6 values"
@@ -153,6 +186,37 @@ final class BLEManager: NSObject, ObservableObject {
 
         pendingJointTargetsDegrees = jointAngles
         pendingJointTargetsDirty = true
+    }
+
+    func updateCartesianTargetsMM(_ cartesianTargets: [Double]) {
+        guard cartesianTargets.count == 3 else {
+            lastError = "Cartesian target array must contain exactly 3 values"
+            return
+        }
+
+        pendingCartesianTargetsMM = cartesianTargets
+        pendingCartesianTargetsDirty = true
+    }
+
+    private func writeControlModeNow(_ mode: ArmControlMode) {
+        guard let peripheral = connectedPeripheral,
+              let characteristic = controlPointCharacteristic else {
+            return
+        }
+
+        let payload = Data([0x03, mode.rawValue])
+        lastControlCommand = .setMode(mode)
+        peripheral.writeValue(payload, for: characteristic, type: .withResponse)
+    }
+
+    private func flushPendingTargetsIfNeeded() {
+        switch controlMode {
+        case .joint:
+            flushPendingJointTargetsIfNeeded()
+        case .cartesian:
+            flushPendingCartesianTargetsIfNeeded()
+            flushPendingJointTargetsIfNeeded()
+        }
     }
 
     private func flushPendingJointTargetsIfNeeded() {
@@ -175,6 +239,38 @@ final class BLEManager: NSObject, ObservableObject {
         }
 
         pendingJointTargetsDirty = false
+    }
+
+    private func flushPendingCartesianTargetsIfNeeded() {
+        guard pendingCartesianTargetsDirty else { return }
+        guard hasControl else { return }
+
+        guard let peripheral = connectedPeripheral,
+              let characteristic = cartesianTargetsCharacteristic else {
+            return
+        }
+
+        let packet = encodeCartesianTargetsPacket(pendingCartesianTargetsMM)
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            guard peripheral.canSendWriteWithoutResponse else { return }
+            peripheral.writeValue(packet, for: characteristic, type: .withoutResponse)
+        } else {
+            guard !cartesianWriteInFlight else { return }
+            cartesianWriteInFlight = true
+            peripheral.writeValue(packet, for: characteristic, type: .withResponse)
+        }
+
+        pendingCartesianTargetsDirty = false
+    }
+
+    private func flushActiveTargetsNow() {
+        switch controlMode {
+        case .joint:
+            flushJointTargetsNow()
+        case .cartesian:
+            flushCartesianTargetsNow()
+            flushJointTargetsNow()
+        }
     }
 
     private func flushJointTargetsNow() {
@@ -202,6 +298,31 @@ final class BLEManager: NSObject, ObservableObject {
         pendingJointTargetsDirty = false
     }
 
+    private func flushCartesianTargetsNow() {
+        guard let peripheral = connectedPeripheral,
+              let characteristic = cartesianTargetsCharacteristic else {
+            return
+        }
+
+        let packet = encodeCartesianTargetsPacket(pendingCartesianTargetsMM)
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            guard peripheral.canSendWriteWithoutResponse else {
+                pendingCartesianTargetsDirty = true
+                return
+            }
+            peripheral.writeValue(packet, for: characteristic, type: .withoutResponse)
+        } else {
+            guard !cartesianWriteInFlight else {
+                pendingCartesianTargetsDirty = true
+                return
+            }
+            cartesianWriteInFlight = true
+            peripheral.writeValue(packet, for: characteristic, type: .withResponse)
+        }
+
+        pendingCartesianTargetsDirty = false
+    }
+
     private func encodeJointTargetsPacket(_ jointAngles: [Double]) -> Data {
         var data = Data(capacity: 12)
 
@@ -210,6 +331,22 @@ final class BLEManager: NSObject, ObservableObject {
             let deciDegreesInt = max(limits.min, min(limits.max, Int(round(angle * 10.0))))
             let deciDegrees = Int16(deciDegreesInt)
             var littleEndianValue = deciDegrees.littleEndian
+            withUnsafeBytes(of: &littleEndianValue) { bytes in
+                data.append(contentsOf: bytes)
+            }
+        }
+
+        return data
+    }
+
+    private func encodeCartesianTargetsPacket(_ cartesianTargets: [Double]) -> Data {
+        var data = Data(capacity: 6)
+
+        for (index, target) in cartesianTargets.enumerated() {
+            let limits = cartesianLimitsMM[index]
+            let targetInt = max(limits.min, min(limits.max, Int(round(target))))
+            let targetMM = Int16(targetInt)
+            var littleEndianValue = targetMM.littleEndian
             withUnsafeBytes(of: &littleEndianValue) { bytes in
                 data.append(contentsOf: bytes)
             }
@@ -237,11 +374,14 @@ final class BLEManager: NSObject, ObservableObject {
         controlPointCharacteristic = nil
         ownerStatusCharacteristic = nil
         jointTargetsCharacteristic = nil
+        cartesianTargetsCharacteristic = nil
         activePeripheralName = "Not connected"
         hasControl = false
         lastControlCommand = .none
         pendingJointTargetsDirty = false
+        pendingCartesianTargetsDirty = false
         jointWriteInFlight = false
+        cartesianWriteInFlight = false
         isConnected = false
         disconnectAfterNextWrite = false
     }
@@ -337,7 +477,10 @@ extension BLEManager: CBPeripheralDelegate {
         }
 
         for service in services where service.uuid == armServiceUUID {
-            peripheral.discoverCharacteristics([controlPointUUID, ownerTokenUUID, jointTargetsUUID], for: service)
+            peripheral.discoverCharacteristics(
+                [controlPointUUID, ownerTokenUUID, jointTargetsUUID, cartesianTargetsUUID],
+                for: service
+            )
         }
     }
 
@@ -360,6 +503,8 @@ extension BLEManager: CBPeripheralDelegate {
                 ownerStatusCharacteristic = characteristic
             case jointTargetsUUID:
                 jointTargetsCharacteristic = characteristic
+            case cartesianTargetsUUID:
+                cartesianTargetsCharacteristic = characteristic
             default:
                 break
             }
@@ -367,10 +512,11 @@ extension BLEManager: CBPeripheralDelegate {
 
         if controlPointCharacteristic != nil,
            ownerStatusCharacteristic != nil,
-           jointTargetsCharacteristic != nil {
+           jointTargetsCharacteristic != nil,
+           cartesianTargetsCharacteristic != nil {
             connectionState = "Connected and ready"
             readOwnerStatus()
-            flushPendingJointTargetsIfNeeded()
+            flushPendingTargetsIfNeeded()
         }
     }
 
@@ -380,6 +526,13 @@ extension BLEManager: CBPeripheralDelegate {
         _ = peripheral
 
         if let error {
+            if characteristic.uuid == jointTargetsUUID {
+                jointWriteInFlight = false
+            }
+            if characteristic.uuid == cartesianTargetsUUID {
+                cartesianWriteInFlight = false
+            }
+
             // If we were trying to disconnect, continue anyway.
             if lastControlCommand == .releaseAndDisconnect {
                 if let connectedPeripheral {
@@ -396,12 +549,13 @@ extension BLEManager: CBPeripheralDelegate {
 
         switch characteristic.uuid {
         case controlPointUUID:
-            switch lastControlCommand {
+            let completedCommand = lastControlCommand
+            lastControlCommand = .none
+
+            switch completedCommand {
             case .take:
                 readOwnerStatus()
-
-                // Ensure the arm updates immediately to the current slider pose.
-                flushJointTargetsNow()
+                writeControlModeNow(controlMode)
             case .release:
                 hasControl = false
                 readOwnerStatus()
@@ -412,13 +566,17 @@ extension BLEManager: CBPeripheralDelegate {
                     central?.cancelPeripheralConnection(connectedPeripheral)
                 }
                 disconnectAfterNextWrite = false
+            case .setMode:
+                flushActiveTargetsNow()
             }
-            lastControlCommand = .none
 
         case jointTargetsUUID:
             jointWriteInFlight = false
-            flushPendingJointTargetsIfNeeded()
-            break
+            flushPendingTargetsIfNeeded()
+
+        case cartesianTargetsUUID:
+            cartesianWriteInFlight = false
+            flushPendingTargetsIfNeeded()
 
         default:
             break
@@ -442,6 +600,9 @@ extension BLEManager: CBPeripheralDelegate {
         }
 
         hasControl = (data[0] != 0)
+        if hasControl {
+            flushPendingTargetsIfNeeded()
+        }
     }
 
     private func bluetoothStateMessage(for state: CBManagerState) -> String {
@@ -465,6 +626,6 @@ extension BLEManager: CBPeripheralDelegate {
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
         guard peripheral.identifier == connectedPeripheral?.identifier else { return }
-        flushPendingJointTargetsIfNeeded()
+        flushPendingTargetsIfNeeded()
     }
 }

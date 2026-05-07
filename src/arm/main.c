@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -6,6 +7,7 @@
 #include "ble/arm_ble_interface.h"
 #include "hal/servo_bus.h"
 #include "hardware/sync.h"
+#include "kinematics/arm_kinematics.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
@@ -38,6 +40,13 @@ typedef struct joint_config {
 	int32_t offset_deci_deg;
 } joint_config_t;
 
+typedef struct pending_ble_targets {
+	arm_ble_event_t latest_joint_event;
+	arm_ble_event_t latest_cartesian_event;
+	bool has_joint_event;
+	bool has_cartesian_event;
+} pending_ble_targets_t;
+
 // Register-style global targets for each joint in deci-degrees (0.1°).
 volatile int32_t g_joint_target_deci_deg[ARM_JOINT_COUNT] = {0, 0, 0, 0, 0, 0};
 
@@ -54,6 +63,10 @@ static int16_t g_last_sent_raw_by_joint[ARM_JOINT_COUNT] = {0};
 static bool g_last_sent_valid_by_joint[ARM_JOINT_COUNT] = {false};
 static volatile bool g_control_tick_due = false;
 static queue_t g_ble_event_queue;
+static arm_ble_control_mode_t g_control_mode = ARM_BLE_CONTROL_MODE_JOINT;
+static arm_kinematics_solution_t g_last_valid_cartesian_solution = {0};
+static arm_kinematics_cartesian_t g_cartesian_target_mm = {0.0f, 0.0f, 429.0f};
+static bool g_cartesian_ik_holding = false;
 
 // Clamps an integer value between a minimum and maximum range.
 static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
@@ -119,6 +132,42 @@ static int16_t deci_deg_to_raw_position(int32_t deci_deg) {
 	return (int16_t)raw_position;
 }
 
+// Converts degrees to logical deci-degrees for the existing joint target registers.
+static int32_t degrees_to_deci_deg(float degrees) {
+	return (int32_t)lroundf(degrees * 10.0f);
+}
+
+// Builds a sim-space 4-DOF kinematics seed from the logical real-joint target registers.
+static void read_kinematics_solution_from_joint_targets(arm_kinematics_solution_t* solution) {
+	if (solution == NULL) {
+		return;
+	}
+
+	solution->joint_deg[0] = ((float)g_joint_target_deci_deg[5]) / 10.0f;
+	solution->joint_deg[1] = ((float)g_joint_target_deci_deg[4]) / 10.0f;
+	solution->joint_deg[2] = ((float)g_joint_target_deci_deg[3]) / 10.0f;
+	solution->joint_deg[3] = ((float)g_joint_target_deci_deg[2]) / 10.0f;
+}
+
+// Maps sim-space IK output into the real arm's logical joint registers.
+static void write_kinematics_solution_to_joint_targets(const arm_kinematics_solution_t* solution) {
+	if (solution == NULL) {
+		return;
+	}
+
+	g_joint_target_deci_deg[5] = degrees_to_deci_deg(solution->joint_deg[0]);
+	g_joint_target_deci_deg[4] = degrees_to_deci_deg(solution->joint_deg[1]);
+	g_joint_target_deci_deg[3] = degrees_to_deci_deg(solution->joint_deg[2]);
+	g_joint_target_deci_deg[2] = degrees_to_deci_deg(solution->joint_deg[3]);
+}
+
+// Seeds Cartesian mode from the current logical joint pose to avoid mode-switch jumps.
+static void seed_cartesian_state_from_joint_targets(void) {
+	read_kinematics_solution_from_joint_targets(&g_last_valid_cartesian_solution);
+	arm_kinematics_forward(&g_last_valid_cartesian_solution, &g_cartesian_target_mm);
+	g_cartesian_ik_holding = false;
+}
+
 // Timer callback function to signal that a control tick is due.
 static bool control_tick_timer_callback(repeating_timer_t* timer) {
 	(void)timer;
@@ -141,6 +190,11 @@ static void initialize_joint_targets_to_safe_pose(void) {
 		g_joint_target_deci_deg[joint_index] = 0;
 		g_last_sent_valid_by_joint[joint_index] = false;
 	}
+
+	g_control_mode = ARM_BLE_CONTROL_MODE_JOINT;
+	arm_kinematics_home_solution(&g_last_valid_cartesian_solution);
+	arm_kinematics_forward(&g_last_valid_cartesian_solution, &g_cartesian_target_mm);
+	g_cartesian_ik_holding = false;
 }
 
 // Marks all joints as dirty so the next control tick forces an update.
@@ -152,9 +206,70 @@ static void mark_all_joint_outputs_dirty(void) {
 
 // Applies a BLE target update packet to the joint target registers.
 static void apply_ble_joint_targets(const arm_ble_event_t* event) {
-	for (size_t joint_index = 0; joint_index < ARM_JOINT_COUNT; ++joint_index) {
+	const size_t joints_to_apply =
+		(g_control_mode == ARM_BLE_CONTROL_MODE_CARTESIAN) ? 2u : ARM_JOINT_COUNT;
+
+	for (size_t joint_index = 0; joint_index < joints_to_apply; ++joint_index) {
 		g_joint_target_deci_deg[joint_index] = event->joint_target_deci_deg[joint_index];
 	}
+}
+
+// Applies an owner-requested control mode switch.
+static void apply_ble_control_mode(arm_ble_control_mode_t requested_mode) {
+	if (requested_mode != ARM_BLE_CONTROL_MODE_JOINT &&
+	    requested_mode != ARM_BLE_CONTROL_MODE_CARTESIAN) {
+		return;
+	}
+
+	if (requested_mode == g_control_mode) {
+		return;
+	}
+
+	if (requested_mode == ARM_BLE_CONTROL_MODE_CARTESIAN) {
+		seed_cartesian_state_from_joint_targets();
+		printf("ble control mode: cartesian xyz\n");
+	} else {
+		printf("ble control mode: joint targets\n");
+	}
+
+	g_control_mode = requested_mode;
+}
+
+// Applies a Cartesian target through IK, leaving wrist/gripper joints under manual control.
+static void apply_ble_cartesian_target(const arm_ble_event_t* event) {
+	if (event == NULL || g_control_mode != ARM_BLE_CONTROL_MODE_CARTESIAN) {
+		return;
+	}
+
+	const arm_kinematics_cartesian_t requested_target = {
+		.x_mm = (float)event->cartesian_target_mm[0],
+		.y_mm = (float)event->cartesian_target_mm[1],
+		.z_mm = (float)event->cartesian_target_mm[2],
+	};
+	arm_kinematics_solution_t solved_solution = g_last_valid_cartesian_solution;
+	arm_kinematics_cartesian_t clamped_target = requested_target;
+
+	const bool solved = arm_kinematics_inverse(&requested_target,
+	                                         &g_last_valid_cartesian_solution,
+	                                         &solved_solution,
+	                                         &clamped_target);
+	if (!solved) {
+		if (!g_cartesian_ik_holding) {
+			printf("cartesian ik hold: target %.0f %.0f %.0f mm unreachable\n",
+			       requested_target.x_mm, requested_target.y_mm, requested_target.z_mm);
+		}
+		g_cartesian_ik_holding = true;
+		return;
+	}
+
+	if (g_cartesian_ik_holding) {
+		printf("cartesian ik recovered\n");
+	}
+
+	g_cartesian_ik_holding = false;
+	g_last_valid_cartesian_solution = solved_solution;
+	g_cartesian_target_mm = clamped_target;
+	write_kinematics_solution_to_joint_targets(&solved_solution);
 }
 
 // Applies safe-pose behavior after ownership timeout/disconnect.
@@ -163,28 +278,64 @@ static void apply_ble_safe_pose(void) {
 		g_joint_target_deci_deg[joint_index] = 0;
 	}
 
+	g_control_mode = ARM_BLE_CONTROL_MODE_JOINT;
+	arm_kinematics_home_solution(&g_last_valid_cartesian_solution);
+	arm_kinematics_forward(&g_last_valid_cartesian_solution, &g_cartesian_target_mm);
+	g_cartesian_ik_holding = false;
 	mark_all_joint_outputs_dirty();
 	printf("ble safety event: commanding safe pose targets\n");
+}
+
+static void clear_pending_ble_targets(pending_ble_targets_t* pending_targets) {
+	if (pending_targets == NULL) {
+		return;
+	}
+
+	pending_targets->has_joint_event = false;
+	pending_targets->has_cartesian_event = false;
+}
+
+static void apply_pending_ble_targets(pending_ble_targets_t* pending_targets) {
+	if (pending_targets == NULL) {
+		return;
+	}
+
+	if (pending_targets->has_joint_event) {
+		apply_ble_joint_targets(&pending_targets->latest_joint_event);
+	}
+
+	if (pending_targets->has_cartesian_event) {
+		apply_ble_cartesian_target(&pending_targets->latest_cartesian_event);
+	}
+
+	clear_pending_ble_targets(pending_targets);
 }
 
 // Drains queued BLE events from core1 and applies them on core0.
 static void process_ble_events(void) {
 	arm_ble_event_t event;
-	arm_ble_event_t latest_target_event = {0};
-	bool has_latest_target_event = false;
-	bool saw_safe_pose_event = false;
+	pending_ble_targets_t pending_targets = {0};
 
 	while (queue_try_remove(&g_ble_event_queue, &event)) {
 		switch (event.type) {
 			case ARM_BLE_EVENT_SET_TARGETS:
-				if (!saw_safe_pose_event) {
-					latest_target_event = event;
-					has_latest_target_event = true;
-				}
+				pending_targets.latest_joint_event = event;
+				pending_targets.has_joint_event = true;
+				break;
+
+			case ARM_BLE_EVENT_SET_CARTESIAN_TARGET:
+				pending_targets.latest_cartesian_event = event;
+				pending_targets.has_cartesian_event = true;
+				break;
+
+			case ARM_BLE_EVENT_SET_CONTROL_MODE:
+				apply_pending_ble_targets(&pending_targets);
+				apply_ble_control_mode(event.control_mode);
 				break;
 
 			case ARM_BLE_EVENT_SAFE_POSE:
-				saw_safe_pose_event = true;
+				clear_pending_ble_targets(&pending_targets);
+				apply_ble_safe_pose();
 				break;
 
 			default:
@@ -192,11 +343,7 @@ static void process_ble_events(void) {
 		}
 	}
 
-	if (saw_safe_pose_event) {
-		apply_ble_safe_pose();
-	} else if (has_latest_target_event) {
-		apply_ble_joint_targets(&latest_target_event);
-	}
+	apply_pending_ble_targets(&pending_targets);
 }
 
 // Sends joint target positions to the servo bus if they have changed significantly.
@@ -289,7 +436,8 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
 	printf("  Target regs   : g_joint_target_deci_deg[0..5] (deci-degrees, 0.1 deg units)\n");
 	printf("  BLE role      : peripheral (core1)\n");
-	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 targets=0xFFF3\n");
+	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 joints=0xFFF3 xyz=0xFFF4\n");
+	printf("  BLE modes     : joint targets, cartesian xyz\n");
 	printf("  BLE timeout   : disabled (release/disconnect only)\n");
 }
 
