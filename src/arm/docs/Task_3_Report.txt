@@ -1,0 +1,240 @@
+Task Description: 
+Add a Cartesian (XYZ) control mode to the robotic arm so we can move specifcially the arm tip position (X, Y, Z) instead of only moving individual joint angles. 
+ 
+ 
+Main Idea: 
+Joint control is easy to send, but it is not how users naturally think about moving the arm. 
+Cartesian mode lets the user “drag” the arm tip around in space. 
+ 
+ 
+To make this work: 
+The macOS app adds an XYZ control mode UI (three sliders: X, Y, Z). 
+The firmware adds a Cartesian mode that converts XYZ targets into joint targets using inverse kinematics (IK). 
+The existing joint-target control loop and servo-bus pipeline from earlier tasks remains the final output stage. 
+ 
+ 
+What Was Made In This Task: 
+1) Firmware-side Cartesian mode (embedded) 
+A new control mode flag: JOINT vs CARTESIAN. 
+A new kinematics module that can do: 
+Forward kinematics (FK): joint angles -> tip position (mm) 
+Inverse kinematics (IK): tip position (mm) -> joint angles 
+A Cartesian target register (X, Y, Z in millimeters) and “hold last valid solution” behavior for unreachable positions. 
+ 
+2) Computer app Cartesian mode 
+A “Cartesian Control” / “Joint Control” toggle. 
+XYZ sliders in millimeters. 
+Wrist / gripper joints remain manual (joint sliders still control joints 1 and 2). 
+A matching small kinematics helper (used for UI seeding and preview so mode switches don’t make the arm jump). 
+ 
+ 
+New Computer App Interface for Cartesian Control: 
+ 
+ 
+Video Demo: 
+ 
+ 
+ 
+ 
+System Overview (High-Level Architecture): 
+Firmware (Pico ) 
+Main control loop (core 0): 
+Runs the 20 Hz servo update tick 
+Applies BLE events (joint targets, Cartesian target, mode switch) 
+If in Cartesian mode, runs IK and updates joint target registers 
+Sends joint targets to the controller board using the same multi-servo move command 
+ 
+Computer App (SwiftUI) 
+UI layer: 
+Joint mode: 6 joint sliders 
+Cartesian mode: XYZ sliders + wrist/gripper joint sliders 
+BLE layer: 
+Streams the latest target while dragging 
+Writes either joint targets (12 bytes) or Cartesian targets (6 bytes), depending on mode 
+ 
+Mode Selection: 
+Control point characteristic: 0xFFF1 (write-with-response) 
+Control point command: SET_MODE (0x03) 
+Mode values: 
+0 = JOINT 
+1 = CARTESIAN 
+ 
+Cartesian Target Packet: 
+Cartesian targets characteristic: 0xFFF4 (write / write-without-response) 
+Payload is always 6 bytes total: 
+3 × int16 little-endian 
+[X_mm, Y_mm, Z_mm] 
+Units are in millimeters. 
+ 
+ 
+ 
+Math Model (Most Important Part): 
+ 
+1) Coordinate Frame and Arm Model 
+The Cartesian frame matches the simulation: 
+Origin: ground reference at (0, 0, 0) mm 
+Z axis: up 
+Shoulder/base joint point: (0, 0, 65) mm 
+Home pose points straight up and places the tip at approximately (0, 0, 429) mm 
+ 
+The positioning chain is a 4-DOF model: 
+1) Base yaw about +Z 
+2) Shoulder pitch 
+3) Elbow 1 pitch 
+4) Elbow 2 pitch 
+ 
+Link lengths used (mm): 
+Shoulder height: 65 
+Link 1: 101 
+Link 2: 95 
+Link 3: 168 
+Total reach: 364 (Link1 + Link2 + Link3) 
+ 
+Wrist/gripper joints are not worried about in XYZ math. 
+ 
+2) Forward Kinematics (FK) 
+FK is used for: 
+Seeding Cartesian mode when switching from joint mode 
+Display/validation and debugging 
+ 
+Let: 
+theta0 = base yaw 
+theta1 = shoulder pitch 
+theta2 = elbow 1 pitch 
+theta3 = elbow 2 pitch 
+L1, L2, L3 = link lengths 
+ 
+First convert the pitch joints into pitches relative to the horizontal plane: 
+ 
+pitch1 = pi/2 - theta1 
+pitch2 = pitch1 - theta2 
+pitch3 = pitch2 - theta3 
+ 
+Compute radial distance r (in the yaw plane) and vertical offset z (relative to the shoulder): 
+ 
+r = L1*cos(pitch1) + L2*cos(pitch2) + L3*cos(pitch3) 
+z = L1*sin(pitch1) + L2*sin(pitch2) + L3*sin(pitch3) 
+ 
+Rotate the radial distance by yaw to get XYZ: 
+ 
+x = r*cos(theta0) 
+y = r*sin(theta0) 
+z_world = shoulder_z + z 
+ 
+3) Inverse Kinematics (IK) 
+Cartesian mode solves only the 3 pitch joints plus the yaw joint (not the wrist or gripper). 
+ 
+IK is split into two parts: 
+ 
+Part A: Solve yaw directly 
+yaw = atan2(y, x) 
+Clamp yaw to the joint’s allowed range (+/-120 deg for servo limits) 
+ 
+Part B: Solve the pitch chain in a 2D plane 
+After yaw is chosen, the remaining problem becomes planar: 
+target_r = sqrt(x^2 + y^2) 
+target_z_rel = z_world - shoulder_z 
+ 
+The solver uses an iterative damped least squares method: 
+ 
+Error vector (in mm): 
+error = [target_r - current_r, 
+target_z_rel - current_z_rel] 
+ 
+Jacobian (2x3) maps small joint changes into (r, z) changes. 
+Each iteration computes a small delta step: 
+ 
+The Jacobian entries (using the same pitch1/pitch2/pitch3 from FK) are: 
+ 
+d(r)/d(theta1) = L1*sin(pitch1) + L2*sin(pitch2) + L3*sin(pitch3) 
+d(r)/d(theta2) =                 L2*sin(pitch2) + L3*sin(pitch3) 
+d(r)/d(theta3) =                                  L3*sin(pitch3) 
+ 
+d(z)/d(theta1) = -L1*cos(pitch1) - L2*cos(pitch2) - L3*cos(pitch3) 
+d(z)/d(theta2) =                   -L2*cos(pitch2) - L3*cos(pitch3) 
+d(z)/d(theta3) =                                      -L3*cos(pitch3) 
+ 
+delta = J^T * inverse(J*J^T + lambda^2*I) * error 
+ 
+Where: 
+J is the 2x3 Jacobian 
+lambda is a damping factor 
+I is the 2x2 identity 
+ 
+Stability rules used each update: 
+Clamp the target into the reachable workspace (Z >= 0, and clamp to the reachable sphere) 
+Limit the joint step size (prevents sudden jumps) 
+Clamp each pitch joint to its allowed range after each iteration 
+If the matrix becomes bad (determinant too small), stop iterating 
+ 
+Unreachable targets: 
+If IK can't converge to tolerance, the firmware holds the last valid solution (no sudden snap). 
+When a new reachable target arrives later, it resumes (“recovers”). 
+ 
+ 
+ 
+End to End Flow (XYZ Slider -> Servo Motion): 
+1) User input (macOS) 
+Switch to Cartesian mode. 
+Drag X/Y/Z sliders to pick a tip target in mm. 
+ 
+2) Packet sending (macOS) 
+App rate-limits and writes the latest XYZ target. 
+Wrist/gripper (joints 1–2) can still be sent as joint targets at the same time. 
+ 
+3) Receive + queueing (firmware) 
+The Pico receives XYZ packets and pushes them into a cross-core event queue. 
+Only the latest queued target is kept 
+ 
+4) Applying targets + IK (firmware) 
+In Cartesian mode, the control core clamps the target and runs IK. 
+If solved: 
+Update “last valid” IK solution 
+Write the solved joints into the joint target registers 
+If not solved: 
+Hold last valid position 
+ 
+5) Servo update tick (firmware) 
+At 20 Hz, the interrupt control tick sends a servo move command. 
+A small deadband is used to not spam the servo bus over tiny changes. 
+ 
+ 
+ 
+Verification I did: 
+Firmware checks: 
+Verified switching modes does not cause a jump (Cartesian mode is seeded from current joint targets). 
+Verified reachable XYZ targets produce somewhat smooth motion. 
+Verified unreachable XYZ targets do not snap; the controller holds last valid pose. 
+Re-Verified serial command packets just like in Task 2 
+Mac app checks: 
+Verified XYZ sliders stream targets continuously during drag. 
+Verified wrist/gripper still work during Cartesian mode. 
+Verified Center Pose command returns to the home position target. 
+ 
+Flow Chart: Cartesian Mode Control Loop (Mac -> Firmware -> Servos) 
+Flow Chart: Cartesian Mode Control Loop (Mac -> Firmware -> Servos)
+
+flowchart TD
+		A["User selects Cartesian mode"] --> B["App sends SET_MODE = CARTESIAN"]
+		B --> C["App streams XYZ target (mm)"]
+
+		C --> D["Firmware receives XYZ packet"]
+		D --> E["Queue ARM_BLE_EVENT_SET_CARTESIAN_TARGET"]
+		E --> F["Core0 drains BLE queue"]
+
+		F --> G{Control mode == CARTESIAN?}
+		G -- No --> H["Ignore XYZ packets"]
+		G -- Yes --> I["Clamp target (Z>=0, reach sphere)"]
+
+		I --> J["Compute yaw = atan2(y,x) and clamp"]
+		J --> K["Planar IK solve with damped least squares"]
+		K --> L{IK solved?}
+
+		L -- No --> M["Hold last valid IK pose"]
+		L -- Yes --> N["Update joint target registers (joints 3-6)"]
+
+		M --> O["20 Hz control tick"]
+		N --> O
+
+		O --> P["Convert logical degrees -> raw servo positions"]
+		P --> Q["Send multi-servo move over UART"]
