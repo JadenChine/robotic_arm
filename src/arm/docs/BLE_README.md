@@ -18,15 +18,19 @@ The firmware allows **up to 2 concurrent BLE connections**, tracked in `g_connec
 
 #### GATT surface (what centrals see)
 
-Custom service `0xFFF0` exposes three characteristics:
+Custom service `0xFFF0` exposes four characteristics:
 
 - `0xFFF1` — **Control Point** (write-with-response)
   - `0x01` = TAKE_CONTROL
   - `0x02` = RELEASE_CONTROL
+  - `0x03, mode` = SET_CONTROL_MODE (`0x00` joint, `0x01` Cartesian)
 - `0xFFF2` — **Owner Status** (read, dynamic)
   - Returns 1 byte: `0x01` if *this connection* is the owner; else `0x00`
 - `0xFFF3` — **Joint Targets** (write / write-without-response)
   - Payload: 6 × `int16` (deci-degrees), little-endian → 12 bytes total
+- `0xFFF4` — **Cartesian Targets** (write / write-without-response)
+  - Payload: 3 × `int16` (millimeters), little-endian → 6 bytes total
+  - Order: X, Y, Z in the simulation coordinate frame
 
 #### Mac app connection lifecycle
 
@@ -34,7 +38,7 @@ Custom service `0xFFF0` exposes three characteristics:
 
 1. Creates `CBCentralManager` and waits for `.poweredOn`.
 2. Scans for peripherals advertising `0xFFF0`.
-3. On Connect: connects, discovers service `0xFFF0`, then discovers `0xFFF1/0xFFF2/0xFFF3`.
+3. On Connect: connects, discovers service `0xFFF0`, then discovers `0xFFF1/0xFFF2/0xFFF3/0xFFF4`.
 4. Periodically reads `0xFFF2` to update whether it is currently the owner.
 
 The UI is designed so you can connect, take/release control, and disconnect back to a clean scanning state.
@@ -44,6 +48,8 @@ The UI is designed so you can connect, take/release control, and disconnect back
 Ownership is intentionally **not token-based**. There is no password, no shared key, and no monotonic token counter. The firmware simply records which **connection handle** currently owns.
 
 At the ATT level, the Control Point command is "first byte only": the payload must be at least 1 byte, and only `buffer[0]` is interpreted (any additional bytes are ignored). Unknown command values are rejected.
+
+The exception is SET_CONTROL_MODE (`0x03`), which requires exactly 2 bytes so the mode byte is unambiguous.
 
 #### TAKE_CONTROL (`0x01`) — last-writer wins
 
@@ -79,6 +85,24 @@ If Central A owned and was holding a non-zero pose, and Central B steals ownersh
 - If the writer **is** the owner, firmware clears `g_owner_handle` and enqueues a **safe pose** event (`ARM_BLE_EVENT_SAFE_POSE`).
 
 Safe pose means: all joint targets become 0° and the servo loop is forced to treat outputs as dirty so the next control tick sends an update.
+
+The firmware also returns to joint-target mode on safe pose. This keeps release/disconnect behavior conservative and avoids reconnecting into a stale Cartesian state.
+
+#### SET_CONTROL_MODE (`0x03, mode`) — owner-only
+
+**Mac → Pico**
+
+- User presses **Cartesian Control** or **Joint Control**.
+- App writes `[0x03, mode]` to `0xFFF1` using write-with-response.
+- `mode = 0x00` selects joint-target mode.
+- `mode = 0x01` selects Cartesian XYZ mode.
+
+**Pico firmware behavior**
+
+- If writer is not the current owner, the write fails with an ATT authorization error.
+- If the mode byte is not `0x00` or `0x01`, the write is rejected.
+- Entering Cartesian mode seeds the IK state from the current logical joint target registers so the mode switch itself does not command a jump.
+- Leaving Cartesian mode preserves the current logical target registers; subsequent `0xFFF3` writes resume full six-joint control.
 
 #### Owner Status (`0xFFF2`) — “am I the owner?”
 
@@ -125,8 +149,41 @@ The Mac app continuously writes targets while sliders are moved, but only when i
   - Enqueue `ARM_BLE_EVENT_SET_TARGETS` into the cross-core `queue_t`.
 
 **Pico core 0 (main loop):** `process_ble_events()` dequeues the event → `apply_ble_joint_targets()`:
-- Writes deci-degrees (0.1°) into `g_joint_target_deci_deg[0..5]`
+- In joint mode, writes deci-degrees (0.1°) into `g_joint_target_deci_deg[0..5]`
+- In Cartesian mode, writes only real Joints 1-2 and ignores real Joints 3-6 because IK owns the positioning joints
 - Leaves servo transmission to the control-tick scheduler
+
+### 4. Sending Cartesian Targets (XYZ Slider → IK → Servo)
+
+**Mac → Pico:**
+1. User drags an X/Y/Z slider → `updateCartesianTargetsMM([Double])` marks `pendingCartesianTargetsDirty`.
+2. The same 60 Hz send timer coalesces updates and flushes only the latest XYZ target.
+3. `encodeCartesianTargetsPacket()` converts each axis to `Int16` millimeters and packs 6 bytes little-endian.
+4. Written to `0xFFF4` (prefers write-without-response if supported).
+
+Slider ranges in the macOS app are:
+
+- X: `-364 mm` to `+364 mm`
+- Y: `-364 mm` to `+364 mm`
+- Z: `0 mm` to `429 mm`
+
+**Pico core 1 (BLE):** `att_write_callback()` → `handle_cartesian_targets_write()`:
+
+- If writer ≠ owner: ignore and return success.
+- If writer == owner:
+  - Reject if payload ≠ 6 bytes.
+  - Decode 3 × `int16` LE → `arm_ble_event_t.cartesian_target_mm[]`.
+  - Enqueue `ARM_BLE_EVENT_SET_CARTESIAN_TARGET` into the cross-core `queue_t`.
+
+**Pico core 0 (main loop):** `process_ble_events()` coalesces high-rate targets, then `apply_ble_cartesian_target()`:
+
+- Ignores XYZ targets unless firmware is in Cartesian mode.
+- Clamps simple workspace bounds: ground plane, max reach, and yaw range.
+- Runs damped least-squares IK from the last valid solution.
+- Maps sim J1/J2/J3/J4 to real J6/J5/J4/J3 logical target registers.
+- Holds the previous valid IK pose if the solver cannot converge.
+
+Real Joints 1 and 2 still use `0xFFF3` while Cartesian mode is active.
 
 **Control tick (20 Hz timer ISR → main loop):** `send_joint_targets_if_dirty()`:
 - For each joint: clamp → direction/offset transform → `deci_deg_to_raw_position()` (maps ±120° → 0–1000 raw)
@@ -134,7 +191,7 @@ The Mac app continuously writes targets while sliders are moved, but only when i
 - Only dirty joints get batched into one `servo_bus_move_multiple()` call
 - Sent over UART to the xArm controller board → physical servos
 
-### 4. Ownership Timeout / Disconnect Safety
+### 5. Ownership Timeout / Disconnect Safety
 
 There is **no inactivity timeout**. Ownership does not expire based on time or target write rate.
 

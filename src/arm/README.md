@@ -17,6 +17,11 @@ The goal is to keep this file evergreen: accurate, practical, and focused on imp
 
 The firmware provides a C HAL and an application-layer control loop for commanding six arm joints from a Raspberry Pi Pico.
 
+It supports two owner-gated control modes:
+
+1. Joint target mode: BLE writes six logical joint angles directly.
+2. Cartesian XYZ mode: BLE writes an end-effector tip target in millimeters, then firmware IK drives the four positioning joints while wrist/gripper joints remain manually controlled.
+
 Two UART protocol backends are supported:
 
 1. Direct smart-servo protocol
@@ -122,10 +127,28 @@ Responsibilities:
 
 - heartbeat LED liveness loop
 - six global joint target registers (deci-degrees, 0.1°)
+- joint-target and Cartesian control-mode state
 - repeating timer interrupt that schedules control ticks
 - periodic dirty-setpoint transmission through HAL
 
-### 5) BLE Control Layer
+### 5) Kinematics Layer
+
+Path: src/arm/src/kinematics
+
+Responsibilities:
+
+- forward kinematics for the simulation-compatible 4-DOF positioning chain
+- damped least-squares inverse kinematics for Cartesian XYZ targets
+- simulation-frame link lengths, base offset, signs, and joint limits
+- Cartesian target clamping and hold-last-valid behavior for failed IK solves
+
+Key files:
+
+- src/arm/src/kinematics/arm_kinematics.h
+- src/arm/src/kinematics/arm_kinematics.c
+- src/arm/src/kinematics/README.md
+
+### 6) BLE Control Layer
 
 Path: src/arm/src/ble
 
@@ -133,6 +156,7 @@ Responsibilities:
 
 - expose BLE GATT service for remote target writes
 - enforce single-owner control semantics
+- accept owner-only control-mode switches
 - queue cross-core BLE events for core0 application loop
 - trigger safe-pose fallback on owner release/disconnect
 
@@ -287,15 +311,68 @@ Binary payload (12 bytes total):
 Firmware conversion path:
 
 1. decode joint targets as deci-degrees (0.1°)
-2. write to `g_joint_target_deci_deg[0..5]`
-3. existing 20 Hz control loop applies clamp/transform/deadband and transmits via UART backend
+2. in joint mode, write all six values to `g_joint_target_deci_deg[0..5]`
+3. in Cartesian mode, write only real Joints 1-2 and ignore Joints 3-6 because IK owns them
+4. existing 20 Hz control loop applies clamp/transform/deadband and transmits via UART backend
+
+### Cartesian Target Packet (`0xFFF4`)
+
+Binary payload (6 bytes total):
+
+- 3 x `int16` little-endian
+- unit: millimeters
+- order: X, Y, Z
+
+Firmware conversion path:
+
+1. decode XYZ as millimeters in the simulation coordinate frame
+2. clamp simple workspace bounds (ground, max reach, yaw)
+3. solve IK seeded from the last valid Cartesian solution
+4. map sim Joint 1/2/3/4 to real Joint 6/5/4/3 logical target registers
+5. existing 20 Hz control loop applies clamp/transform/deadband and transmits via UART backend
+
+### Control Mode Command (`0xFFF1`)
+
+Control point commands are:
+
+- `0x01`: take control (steals immediately)
+- `0x02`: release control
+- `0x03, mode`: set control mode
+
+Mode values:
+
+- `0x00`: joint target mode
+- `0x01`: Cartesian XYZ mode
+
+Only the current owner can set mode. Non-owner target writes remain ACK'd as success and ignored.
 
 ### Ownership Rules
 
 - up to 2 BLE centrals can connect simultaneously
 - only current owner can write joint targets
+- only current owner can switch control modes or write Cartesian targets
 - non-owner target writes are ignored (ACK'd as success) and do not change targets
-- safe pose (all zeros) is commanded on owner release or owner disconnect
+- safe pose (all zeros) is commanded on owner release or owner disconnect, and firmware returns to joint mode
+
+## Cartesian Control Mode
+
+Cartesian mode uses the 4-DOF positioning model from `sim/README.md`:
+
+- origin: ground reference at `(0, 0, 0)` mm
+- shoulder/base joint: `(0, 0, 65)` mm
+- link lengths: `101 mm`, `95 mm`, `168 mm`
+- home tip position: `(0, 0, 429)` mm
+
+IK ignores wrist/gripper joints. The mapping is:
+
+- Sim Joint 1 (base yaw) -> real Joint 6
+- Sim Joint 2 (shoulder pitch) -> real Joint 5
+- Sim Joint 3 (elbow 1) -> real Joint 4
+- Sim Joint 4 (elbow 2) -> real Joint 3
+
+Real Joints 1-2 remain controlled by the existing joint target packet in Cartesian mode.
+
+The IK solver is damped least squares in the yaw-aligned pitch plane. It is seeded from the last valid solution to reduce jitter during small slider changes. If a target cannot be solved after workspace clamping, firmware holds the last valid IK pose and continues accepting wrist/gripper updates.
 
 ## Wiring Guidance
 
@@ -322,6 +399,7 @@ Top-level firmware files and folders:
 - src/arm/src/platform/
 - src/arm/src/drivers/
 - src/arm/src/hal/
+- src/arm/src/kinematics/
 - src/arm/src/ble/
 - src/arm/src/btstack_config.h
 
@@ -332,6 +410,7 @@ Top-level firmware files and folders:
 3. Preserve both backends unless intentionally removed.
 4. Add new protocol features to the correct driver first, then map through HAL.
 5. Keep IRQ callbacks short and non-blocking; do serial TX in non-IRQ code.
+6. Keep Cartesian math in `src/arm/src/kinematics`, not in BLE handlers or HAL code.
 
 ## Known Limitations
 
@@ -357,7 +436,15 @@ If BLE clients cannot control motion:
 1. Confirm board is Pico W and build used `-DPICO_BOARD=pico_w`.
 2. Confirm central writes `0x01` to `0xFFF1` before slider packets.
 3. Confirm joint packets are exactly 12 bytes (`6 x int16`, little-endian, 0.1 deg units).
-4. Confirm UI shows OWNER (owner status reads `0x01`).
+4. Confirm Cartesian packets are exactly 6 bytes (`3 x int16`, little-endian, mm units) when using XYZ mode.
+5. Confirm UI shows OWNER (owner status reads `0x01`).
+
+If Cartesian mode does not move as expected:
+
+1. Confirm central writes `[0x03, 0x01]` to `0xFFF1` before writing `0xFFF4`.
+2. Confirm XYZ values are in millimeters using the simulation coordinate frame.
+3. Confirm requested targets are reachable from the shoulder within the 364 mm link reach.
+4. Check serial output for `cartesian ik hold`, which means firmware is holding the last valid IK pose.
 
 If movement is jerky or bus-heavy:
 
@@ -387,3 +474,5 @@ When updating firmware behavior, also update this README:
 - control loop rate/deadband/move-time defaults
 - limitations and expected unsupported paths
 - any new files introduced in platform/drivers/hal/app
+- BLE mode commands, packet sizes, and units
+- Cartesian kinematics constants, mapping, and failure behavior
