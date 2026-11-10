@@ -181,6 +181,111 @@ void testHalAndDrivers() {
   halfDuplex = false;
   assert(servo_bus_move_raw(1, 500, 700) == SERVO_BUS_STATUS_OK);
 }
+
+void testProtocolCorrections() {
+  servo_bus_config_t config;
+  servo_bus_get_default_config(&config);
+  config.backend = SERVO_BUS_BACKEND_DIRECT_SERVO;
+  config.baud_rate = 0;
+  halfDuplex = true;
+  assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
+
+  // PDF LED polarity: 0 = on, 1 = off. Verify entire wire packets, including
+  // the checksum, for both addressed and broadcast variants.
+  assert(servo_bus_led_on(1) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 1, 4, 33, 0, 0xd9}));
+  assert(servo_bus_led_off(1) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 1, 4, 33, 1, 0xd8}));
+  assert(servo_bus_broadcast_led_on() == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 254, 4, 33, 0, 0xdc}));
+  assert(servo_bus_broadcast_led_off() == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 254, 4, 33, 1, 0xdb}));
+
+  // Discovery accepts the single connected servo's real response ID, while
+  // addressed reads still reject another servo's otherwise valid packet.
+  uint8_t id = 255;
+  reply = {0x55, 0x55, 42, 4, 14, 42, 0x99};
+  assert(servo_bus_get_id(254, &id) == SERVO_BUS_STATUS_OK && id == 42);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 254, 3, 14, 0xf0}));
+  reply = {0x55, 0x55, 42, 4, 14, 42, 0x99};
+  assert(servo_bus_get_id(1, &id) == SERVO_BUS_STATUS_ERROR_TIMEOUT);
+  reply = {0x55, 0x55, 42, 4, 14, 42, 0};
+  assert(servo_bus_get_id(254, &id) == SERVO_BUS_STATUS_ERROR_TIMEOUT);
+  reply = {0x55, 0x55, 1, 4, 14, 1, 0xeb};
+  assert(servo_bus_get_id(1, &id) == SERVO_BUS_STATUS_OK && id == 1);
+
+  // All direct movement paths cap time at 30000 ms, keeping the existing
+  // position clamping and centered degree mapping.
+  assert(servo_bus_move_raw(1, 500, 65535) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 1, 7, 1, 0xf4, 1, 0x30, 0x75, 0x5c}));
+  assert(servo_bus_move_wait_raw(1, 500, 30001) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 1, 7, 7, 0xf4, 1, 0x30, 0x75, 0x56}));
+  assert(servo_bus_broadcast_move_raw(500, 30001) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 254, 7, 1, 0xf4, 1, 0x30, 0x75, 0x5f}));
+  assert(servo_bus_move_raw(1, -10, 0) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back()[5] == 0 && wirePackets.back()[6] == 0);
+  assert(wirePackets.back()[7] == 0 && wirePackets.back()[8] == 0);
+  for (const float degrees : {-120.0f, 0.0f, 120.0f}) {
+    assert(servo_bus_move_degrees(1, degrees, 120) == SERVO_BUS_STATUS_OK);
+    const int position = wirePackets.back()[5] + (wirePackets.back()[6] << 8);
+    assert(position == (degrees == -120.0f ? 0 : degrees == 0.0f ? 500 : 1000));
+  }
+
+  // Reject invalid requests before putting any bytes on the wire, and report
+  // INVALID_ARGUMENT through the HAL instead of success or a later timeout.
+  const size_t beforeInvalid = wirePackets.size();
+  assert(servo_bus_set_id(1, 254) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_id(1, 255) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_id(255, 1) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_move_raw(255, 500, 120) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_led_on(255) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_get_id(255, &id) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  int16_t voltage = 0;
+  const uint64_t beforeRejectedRead = timeMs;
+  assert(servo_bus_get_voltage(254, &voltage) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(timeMs == beforeRejectedRead);  // No 20 ms wait for a forbidden reply.
+  assert(servo_bus_set_angle_limits_raw(1, 800, 200) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_angle_limits_raw(1, 500, 500) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_angle_limits_raw(1, -20, -10) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_angle_limits_degrees(1, 90, -90) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_voltage_limits(1, 8000, 6000) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_voltage_limits(1, 6000, 6000) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_voltage_limits(1, 13000, 14000) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_led_errors(1, 8) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(servo_bus_set_led_errors(1, 255) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  const uint8_t invalidIds[] = {1, 254};
+  const int16_t positions[] = {400, 600};
+  assert(servo_bus_move_multiple(invalidIds, positions, 2, 120) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  assert(wirePackets.size() == beforeInvalid);  // No partial queue or START.
+  expectListening();
+
+  // Valid boundary values still work and reset any preceding argument error.
+  assert(servo_bus_set_id(1, 0) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back()[5] == 0);
+  assert(servo_bus_set_id(1, 253) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back()[5] == 253);
+  assert(servo_bus_set_angle_limits_degrees(1, -120, 120) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back()[5] == 0 && wirePackets.back()[6] == 0);
+  assert(wirePackets.back()[7] == 0xe8 && wirePackets.back()[8] == 3);
+  assert(servo_bus_set_voltage_limits(1, 4500, 12000) == SERVO_BUS_STATUS_OK);
+  assert(servo_bus_set_led_errors(1, 0) == SERVO_BUS_STATUS_OK);
+  assert(servo_bus_set_led_errors(1, 7) == SERVO_BUS_STATUS_OK);
+  const uint8_t validIds[] = {0, 253};
+  const size_t beforeMoves = wirePackets.size();
+  assert(servo_bus_move_multiple(validIds, positions, 2, 65535) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.size() == beforeMoves + 3);
+  for (size_t index = beforeMoves; index < beforeMoves + 2; ++index) {
+    assert(wirePackets[index][7] == 0x30 && wirePackets[index][8] == 0x75);
+  }
+  expectListening();
+
+  servo_bus_get_default_config(&config);
+  assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
+  halfDuplex = false;
+  // The direct protocol's time limit must not change the controller protocol.
+  assert(servo_bus_move_raw(1, 500, 65535) == SERVO_BUS_STATUS_OK);
+  assert(wirePackets.back()[5] == 0xff && wirePackets.back()[6] == 0xff);
+}
 }  // namespace
 
 uart_inst_t* uart0 = &instances[0];
@@ -244,5 +349,6 @@ void busy_wait_us_32(uint32_t us) { assert(us == 1); }
 int main() {
   testTransport();
   testHalAndDrivers();
+  testProtocolCorrections();
   std::cout << "Servo UART transport, HAL and backend regression tests passed\n";
 }

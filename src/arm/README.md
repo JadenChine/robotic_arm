@@ -178,6 +178,27 @@ Use when Pico talks to servo bus directly (with appropriate electrical interface
 - supports rich per-servo smart-servo features
 - packet includes ID and checksum
 
+Direct protocol command behavior:
+
+- LED control follows the protocol's polarity: `0` means on and `1` means off,
+  including broadcast LED commands.
+- ID-read requests to broadcast ID `254` accept a reply carrying the responding
+  servo's actual ID. Use discovery with only one servo connected. Other broadcast
+  reads return `SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT` without transmitting,
+  because the protocol specifies that they do not return replies.
+- Direct movement times are clamped to `0..30000 ms`, including queued and
+  broadcast moves. Existing raw-position clamping and centered `-120..120`
+  degree coordinates are preserved.
+- New servo IDs must be `0..253`; packet destination `255` is invalid. LED alarm
+  masks must be `0..7`. Angle and voltage limits retain their existing range
+  clamping, then require minimum strictly below maximum. Invalid requests return
+  `SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT` without sending a packet. The direct
+  driver's corresponding last-error code is `kServoErrorInvalidArgument` (`-3`).
+- A multi-servo move validates all IDs before queuing any move or sending START.
+- The optional reads for last commanded position/time (command `2`) and LED state
+  (command `34`) remain unexposed; current position and queued position/time reads
+  are supported. Torque startup behavior remains under application control.
+
 ### Controller Backend
 
 Use when Pico talks to a HiWonder/xArm controller board that then drives servos.
@@ -490,6 +511,8 @@ ctest --test-dir /tmp/robotic-arm-uart-tests --output-on-failure
 Tests check safe startup, OE ordering, waiting through the final stop bit,
 immediate reply preservation, no-reply/multi-servo commands, timeouts, invalid
 pin assignments, backend switching and the controller default/packet format.
+Command regression cases also cover LED polarity, discovery replies, invalid
+parameters, movement-time limits, and preservation of centered degree coordinates.
 These tests and a Pico W firmware build do not establish electrical performance
 on the actual servo chain. The controller path remains the hardware-validated
 setup; the direct path still needs bench verification.
