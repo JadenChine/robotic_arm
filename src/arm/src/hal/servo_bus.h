@@ -33,6 +33,9 @@ typedef struct servo_bus_config {
   uint8_t default_servo_id;
   uint16_t default_move_time_ms;
   float default_step_degrees;
+  // Active-HIGH buffer OEs. Ignored by the controller-board backend.
+  uint8_t tx_enable_pin;
+  uint8_t rx_enable_pin;
 } servo_bus_config_t;
 
 typedef struct servo_bus_mode_state {

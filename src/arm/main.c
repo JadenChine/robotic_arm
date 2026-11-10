@@ -430,6 +430,10 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  UART baud     : %lu\n", (unsigned long)config->baud_rate);
 	printf("  UART TX pin   : %u\n", config->tx_pin);
 	printf("  UART RX pin   : %u\n", config->rx_pin);
+	if (config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO) {
+		printf("  TX enable pin : %u (active HIGH)\n", config->tx_enable_pin);
+		printf("  RX enable pin : %u (active HIGH)\n", config->rx_enable_pin);
+	}
 	printf("  Control tick  : %u Hz (timer IRQ scheduled)\n", CONTROL_TICK_HZ);
 	printf("  Move time ms  : %u\n", CONTROL_MOVE_TIME_MS);
 	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);

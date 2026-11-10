@@ -63,6 +63,8 @@ void servo_bus_get_default_config(servo_bus_config_t* config) {
           : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
   config->tx_pin = SERVO_BUS_DEFAULT_TX_PIN;
   config->rx_pin = SERVO_BUS_DEFAULT_RX_PIN;
+  config->tx_enable_pin = SERVO_BUS_DIRECT_DEFAULT_TX_ENABLE_PIN;
+  config->rx_enable_pin = SERVO_BUS_DIRECT_DEFAULT_RX_ENABLE_PIN;
   config->default_servo_id = SERVO_BUS_DEFAULT_SERVO_ID;
   config->default_move_time_ms = SERVO_BUS_DEFAULT_MOVE_TIME_MS;
   config->default_step_degrees = SERVO_BUS_DEFAULT_STEP_DEGREES;
@@ -93,8 +95,19 @@ servo_bus_status_t servo_bus_init(const servo_bus_config_t* config) {
                    : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
   }
 
+  const bool direct = config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO;
+  if (direct && (config->tx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
+                 config->rx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
+                 config->tx_enable_pin == arm::PicoUartTransport::kNoEnablePin ||
+                 config->rx_enable_pin == arm::PicoUartTransport::kNoEnablePin)) {
+    return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
+  }
+
   if (!g_transport.init(config->uart_index, baudRate, config->tx_pin,
-                        config->rx_pin)) {
+                        config->rx_pin,
+                        direct ? config->tx_enable_pin : arm::PicoUartTransport::kNoEnablePin,
+                        direct ? config->rx_enable_pin : arm::PicoUartTransport::kNoEnablePin)) {
+    g_initialized = g_transport.initialized();
     return SERVO_BUS_STATUS_ERROR_PROTOCOL;
   }
 
