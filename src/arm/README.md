@@ -58,6 +58,7 @@ Path: src/arm/src/platform
 Responsibilities:
 
 - Pico UART initialization and I/O
+- active-HIGH TX/RX buffer enables and bus turnaround for direct servos
 - timing primitives for periodic scheduling
 - hardware default values (UART index, pins, baud)
 
@@ -177,6 +178,27 @@ Use when Pico talks to servo bus directly (with appropriate electrical interface
 - supports rich per-servo smart-servo features
 - packet includes ID and checksum
 
+Direct protocol command behavior:
+
+- LED control follows the protocol's polarity: `0` means on and `1` means off,
+  including broadcast LED commands.
+- ID-read requests to broadcast ID `254` accept a reply carrying the responding
+  servo's actual ID. Use discovery with only one servo connected. Other broadcast
+  reads return `SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT` without transmitting,
+  because the protocol specifies that they do not return replies.
+- Direct movement times are clamped to `0..30000 ms`, including queued and
+  broadcast moves. Existing raw-position clamping and centered `-120..120`
+  degree coordinates are preserved.
+- New servo IDs must be `0..253`; packet destination `255` is invalid. LED alarm
+  masks must be `0..7`. Angle and voltage limits retain their existing range
+  clamping, then require minimum strictly below maximum. Invalid requests return
+  `SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT` without sending a packet. The direct
+  driver's corresponding last-error code is `kServoErrorInvalidArgument` (`-3`).
+- A multi-servo move validates all IDs before queuing any move or sending START.
+- The optional reads for last commanded position/time (command `2`) and LED state
+  (command `34`) remain unexposed; current position and queued position/time reads
+  are supported. Torque startup behavior remains under application control.
+
 ### Controller Backend
 
 Use when Pico talks to a HiWonder/xArm controller board that then drives servos.
@@ -196,8 +218,61 @@ Current defaults:
 - SERVO_BUS_DEFAULT_UART_INDEX = 0
 - SERVO_BUS_DEFAULT_TX_PIN = 0 (GP0)
 - SERVO_BUS_DEFAULT_RX_PIN = 1 (GP1)
+- SERVO_BUS_DIRECT_DEFAULT_TX_ENABLE_PIN = 2 (GP2, physical pin 4)
+- SERVO_BUS_DIRECT_DEFAULT_RX_ENABLE_PIN = 3 (GP3, physical pin 5)
 - SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE = 9600
 - SERVO_BUS_DIRECT_DEFAULT_BAUD_RATE = 115200
+
+The enable pins are used only by the direct backend. A fresh controller-backend
+initialization leaves them untouched. Reinitializing from direct to controller
+mode first disables both old buffers and leaves their enable pins as inputs with
+pull-downs.
+
+To select direct mode explicitly, start with the default config and override both
+the backend and baud before calling `servo_bus_init`:
+
+```c
+servo_bus_config_t config;
+servo_bus_get_default_config(&config);
+config.backend = SERVO_BUS_BACKEND_DIRECT_SERVO;
+config.baud_rate = 0; // Select the backend's default: 115200 for direct mode.
+// config.tx_enable_pin = 2; // Already populated by get_default_config.
+// config.rx_enable_pin = 3;
+servo_bus_status_t status = servo_bus_init(&config);
+```
+
+Changing only `config.backend` after fetching the controller defaults would retain
+9600 baud. The checked-in application continues to select the controller backend.
+
+### Direct bus direction and timing
+
+The transport uses ordinary, non-inverted UART0 on GP0/GP1, **115200 baud, 8N1**,
+with hardware flow control disabled. GP2 and GP3 are ordinary GPIO outputs driving
+the two buffers' active-HIGH OE inputs; UART RTS/CTS are not used.
+
+| State | GP2 / TX_EN | GP3 / RX_EN |
+|---|---|---|
+| UART initialization | LOW | LOW |
+| Listening (including after a timeout) | LOW | HIGH |
+| Sending one packet | HIGH | LOW |
+
+Initialization keeps both buffers disabled until UART is ready and TX idles HIGH.
+The Pico RX pad has an internal pull-up so it stays HIGH when the receive buffer
+is disabled. For each direct packet, the driver clears stale RX bytes before
+sending. The transport then disables RX, enables TX, allows 1 microsecond for OE
+propagation, sends the packet, and waits for the UART **BUSY flag to clear**. This
+wait includes the shift register and final stop bit, not just an empty FIFO.
+It then disables TX and immediately enables RX before returning from `write()`.
+No RX bytes are discarded after this turnaround, so an immediate reply survives
+the driver's subsequent `flush()` call. Commands without replies and each packet
+in a multi-servo move also return to listening.
+
+Core0 interrupts are masked from entering transmit mode through returning to
+listening, so an ISR cannot hold the bus driven after transmission completes.
+Current direct command packets are at most 10 bytes: about 0.87 ms at 115200 baud,
+plus small software overhead. BLE runs on core1. Keep all HAL/UART calls serialized
+on core0, outside IRQ handlers, as the current application does. Longer packets or
+slower custom baud rates would extend this interrupt-masking interval.
 
 ## Joint Target Control Loop (main.c)
 
@@ -387,6 +462,69 @@ Also verify:
 - voltage-level compatibility on controller TX line into Pico RX
 - shared ground is present
 - controller and servo power are stable
+
+### Direct servo backend wiring
+
+Use the **5-pin DBV/SOT-23 packages** for the pin numbers below. These are the
+single-gate buffers' pin numbers, not the multi-gate 74HC126 numbers in Hiwonder's
+diagram.
+
+| Connection | SN74AHCT1G126 (TX, powered at 5 V) | SN74LVC1G126 (RX, powered at 3.3 V) |
+|---|---|---|
+| Pin 1, OE | Pico GP2, physical pin 4 | Pico GP3, physical pin 5 |
+| Pin 2, A | Pico GP0 / UART TX, physical pin 1 | Shared servo data bus |
+| Pin 3, GND | Common ground | Common ground |
+| Pin 4, Y | Shared servo data bus | Pico GP1 / UART RX, physical pin 2 |
+| Pin 5, VCC | Regulated 5 V | Pico 3V3(OUT), physical pin 36 |
+
+The common bus joins TX buffer Y, RX buffer A, and every servo's signal terminal.
+Add one 10 kΩ bus pull-up to regulated 5 V, 100 nF supply decoupling at each IC,
+and 10 kΩ pull-downs on both OE pins to keep the buffers disabled during reset
+before firmware runs. Add the agreed 10 kΩ pull-up from Pico RX to 3.3 V (the
+internal pull-up supplements it), and a 10 kΩ pull-up from TX buffer A to 3.3 V.
+Pico physical pin 3 is **ground**, not GP2. Connect Pico ground, buffer grounds,
+servo ground and motor-supply negative together. Motor power is separate from
+the regulated 5 V logic rail. Keep the AHCT 5 V rail powered while the bus is live.
+
+The firmware rejects duplicate OE pins, OE/UART pin collisions, non-header GPIOs,
+invalid UART pin mappings, and enable pins overlapping the heartbeat LED. Custom
+OE assignments must also avoid any additional hardware connected by the user.
+Initialize config through `servo_bus_get_default_config` so the new enable fields
+are populated; they are ignored by the controller backend.
+
+Hardware references: [Pico pinout](https://datasheets.raspberrypi.com/pico/Pico-R3-A4-Pinout.pdf),
+[TI AHCT datasheet](https://www.ti.com/lit/ds/symlink/sn74ahct1g126.pdf),
+[TI LVC datasheet](https://www.ti.com/lit/ds/symlink/sn74lvc1g126.pdf), and the
+local [Hiwonder protocol](docs/Hiwonder_Bus_Servo_Communication_Protocol.md).
+
+### Direct bus verification
+
+Host regression tests compile the real transport, HAL and both drivers against
+simulated GPIO/UART hardware. From the repository root:
+
+```bash
+cmake -S src/arm/tests -B /tmp/robotic-arm-uart-tests
+cmake --build /tmp/robotic-arm-uart-tests
+ctest --test-dir /tmp/robotic-arm-uart-tests --output-on-failure
+```
+
+Tests check safe startup, OE ordering, waiting through the final stop bit,
+immediate reply preservation, no-reply/multi-servo commands, timeouts, invalid
+pin assignments, backend switching and the controller default/packet format.
+Command regression cases also cover LED polarity, discovery replies, invalid
+parameters, movement-time limits, and preservation of centered degree coordinates.
+These tests and a Pico W firmware build do not establish electrical performance
+on the actual servo chain. The controller path remains the hardware-validated
+setup; the direct path still needs bench verification.
+
+For direct bring-up, start with one servo with a known ID. Confirm a voltage or
+position read through the HAL, then a move, then repeat with the daisy chain.
+With a logic analyzer/scope, check GP2 stays HIGH through the final stop bit and
+drops before a servo drives its reply, GP3 is LOW during commands and HIGH during
+replies, and the bus is idle HIGH. Check edges and levels on the actual cabling,
+including servo replies. Use unique servo IDs; broadcast ID reads with multiple
+servos cause reply collisions. The normal application sends joint targets soon
+after initialization, so account for that when choosing the bench setup.
 
 ## File Map
 

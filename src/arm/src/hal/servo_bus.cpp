@@ -21,9 +21,16 @@ static servo_bus_status_t mapDirectDriverError(void) {
       return SERVO_BUS_STATUS_ERROR_TIMEOUT;
     case arm::kServoErrorOverflow:
       return SERVO_BUS_STATUS_ERROR_OVERFLOW;
+    case arm::kServoErrorInvalidArgument:
+      return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
     default:
       return SERVO_BUS_STATUS_ERROR_PROTOCOL;
   }
+}
+
+static servo_bus_status_t directWriteStatus(void) {
+  return g_direct_driver.getLastPacketError() == 0 ? SERVO_BUS_STATUS_OK
+                                                  : mapDirectDriverError();
 }
 
 static servo_bus_status_t mapControllerDriverError(void) {
@@ -63,6 +70,8 @@ void servo_bus_get_default_config(servo_bus_config_t* config) {
           : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
   config->tx_pin = SERVO_BUS_DEFAULT_TX_PIN;
   config->rx_pin = SERVO_BUS_DEFAULT_RX_PIN;
+  config->tx_enable_pin = SERVO_BUS_DIRECT_DEFAULT_TX_ENABLE_PIN;
+  config->rx_enable_pin = SERVO_BUS_DIRECT_DEFAULT_RX_ENABLE_PIN;
   config->default_servo_id = SERVO_BUS_DEFAULT_SERVO_ID;
   config->default_move_time_ms = SERVO_BUS_DEFAULT_MOVE_TIME_MS;
   config->default_step_degrees = SERVO_BUS_DEFAULT_STEP_DEGREES;
@@ -93,8 +102,19 @@ servo_bus_status_t servo_bus_init(const servo_bus_config_t* config) {
                    : SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE;
   }
 
+  const bool direct = config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO;
+  if (direct && (config->tx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
+                 config->rx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
+                 config->tx_enable_pin == arm::PicoUartTransport::kNoEnablePin ||
+                 config->rx_enable_pin == arm::PicoUartTransport::kNoEnablePin)) {
+    return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
+  }
+
   if (!g_transport.init(config->uart_index, baudRate, config->tx_pin,
-                        config->rx_pin)) {
+                        config->rx_pin,
+                        direct ? config->tx_enable_pin : arm::PicoUartTransport::kNoEnablePin,
+                        direct ? config->rx_enable_pin : arm::PicoUartTransport::kNoEnablePin)) {
+    g_initialized = g_transport.initialized();
     return SERVO_BUS_STATUS_ERROR_PROTOCOL;
   }
 
@@ -131,7 +151,7 @@ servo_bus_status_t servo_bus_move_raw(uint8_t id, int16_t position, uint16_t tim
   }
 
   g_direct_driver.move(id, position, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_move_degrees(uint8_t id, float degrees, uint16_t time_ms) {
@@ -147,7 +167,7 @@ servo_bus_status_t servo_bus_move_degrees(uint8_t id, float degrees, uint16_t ti
   }
 
   g_direct_driver.moveTo(id, degrees, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_stop(uint8_t id) {
@@ -162,7 +182,7 @@ servo_bus_status_t servo_bus_stop(uint8_t id) {
   }
 
   g_direct_driver.stop(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_move_wait_raw(uint8_t id, int16_t position,
@@ -181,7 +201,7 @@ servo_bus_status_t servo_bus_move_wait_raw(uint8_t id, int16_t position,
   }
 
   g_direct_driver.moveWait(id, position, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_move_wait_degrees(uint8_t id, float degrees,
@@ -200,7 +220,7 @@ servo_bus_status_t servo_bus_move_wait_degrees(uint8_t id, float degrees,
   }
 
   g_direct_driver.moveWaitDegrees(id, degrees, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_start_move(uint8_t id) {
@@ -216,7 +236,7 @@ servo_bus_status_t servo_bus_start_move(uint8_t id) {
   }
 
   g_direct_driver.startMove(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_stop_move(uint8_t id) {
@@ -232,7 +252,7 @@ servo_bus_status_t servo_bus_stop_move(uint8_t id) {
   }
 
   g_direct_driver.stopMove(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_read_wait_position(uint8_t id, int16_t* position,
@@ -289,7 +309,7 @@ servo_bus_status_t servo_bus_broadcast_move_raw(int16_t position, uint16_t time_
   }
 
   g_direct_driver.broadcastMove(position, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_broadcast_move_degrees(float degrees, uint16_t time_ms) {
@@ -305,7 +325,7 @@ servo_bus_status_t servo_bus_broadcast_move_degrees(float degrees, uint16_t time
   }
 
   g_direct_driver.broadcastMoveDegrees(degrees, time_ms);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_broadcast_stop(void) {
@@ -320,7 +340,7 @@ servo_bus_status_t servo_bus_broadcast_stop(void) {
   }
 
   g_direct_driver.broadcastStop();
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_broadcast_led_on(void) {
@@ -334,7 +354,7 @@ servo_bus_status_t servo_bus_broadcast_led_on(void) {
   }
 
   g_direct_driver.broadcastLedOn();
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_broadcast_led_off(void) {
@@ -348,7 +368,7 @@ servo_bus_status_t servo_bus_broadcast_led_off(void) {
   }
 
   g_direct_driver.broadcastLedOff();
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_set_id(uint8_t old_id, uint8_t new_id) {
@@ -365,7 +385,7 @@ servo_bus_status_t servo_bus_set_id(uint8_t old_id, uint8_t new_id) {
   }
 
   g_direct_driver.setId(old_id, new_id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_id(uint8_t query_id, uint8_t* out_id) {
@@ -401,7 +421,7 @@ servo_bus_status_t servo_bus_set_angle_offset(uint8_t id, int8_t offset) {
   }
 
   g_direct_driver.setAngleOffset(id, offset);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_save_angle_offset(uint8_t id) {
@@ -417,7 +437,7 @@ servo_bus_status_t servo_bus_save_angle_offset(uint8_t id) {
   }
 
   g_direct_driver.saveAngleOffset(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_angle_offset(uint8_t id, int8_t* offset) {
@@ -457,7 +477,7 @@ servo_bus_status_t servo_bus_set_angle_limits_raw(uint8_t id, int16_t min_angle,
   }
 
   g_direct_driver.setAngleLimits(id, min_angle, max_angle);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_angle_limits_raw(uint8_t id, int16_t* min_angle,
@@ -497,7 +517,7 @@ servo_bus_status_t servo_bus_set_angle_limits_degrees(uint8_t id, float min_degr
   }
 
   g_direct_driver.setAngleLimitsInDegrees(id, min_degrees, max_degrees);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_angle_limits_degrees(uint8_t id, float* min_degrees,
@@ -537,7 +557,7 @@ servo_bus_status_t servo_bus_set_voltage_limits(uint8_t id, int16_t min_voltage_
   }
 
   g_direct_driver.setVoltageLimits(id, min_voltage_mv, max_voltage_mv);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_voltage_limits(uint8_t id, int16_t* min_voltage_mv,
@@ -576,7 +596,7 @@ servo_bus_status_t servo_bus_set_max_temperature_limit(uint8_t id,
   }
 
   g_direct_driver.setMaxTemperatureLimit(id, max_temp_c);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_max_temperature_limit(uint8_t id,
@@ -701,7 +721,7 @@ servo_bus_status_t servo_bus_set_servo_mode(uint8_t id) {
   }
 
   g_direct_driver.setServoMode(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_set_motor_mode(uint8_t id, int16_t speed) {
@@ -718,7 +738,7 @@ servo_bus_status_t servo_bus_set_motor_mode(uint8_t id, int16_t speed) {
   }
 
   g_direct_driver.setMotorMode(id, speed);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_mode(uint8_t id, servo_bus_mode_state_t* mode_state) {
@@ -754,7 +774,7 @@ servo_bus_status_t servo_bus_motor_on(uint8_t id) {
   }
 
   g_direct_driver.motorOn(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_motor_off(uint8_t id) {
@@ -769,7 +789,7 @@ servo_bus_status_t servo_bus_motor_off(uint8_t id) {
   }
 
   g_direct_driver.motorOff(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_is_motor_on(uint8_t id, bool* is_on) {
@@ -805,7 +825,7 @@ servo_bus_status_t servo_bus_led_on(uint8_t id) {
   }
 
   g_direct_driver.ledOn(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_led_off(uint8_t id) {
@@ -821,7 +841,7 @@ servo_bus_status_t servo_bus_led_off(uint8_t id) {
   }
 
   g_direct_driver.ledOff(id);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_set_led_errors(uint8_t id, uint8_t error_mask) {
@@ -838,7 +858,7 @@ servo_bus_status_t servo_bus_set_led_errors(uint8_t id, uint8_t error_mask) {
   }
 
   g_direct_driver.setLedErrors(id, error_mask);
-  return SERVO_BUS_STATUS_OK;
+  return directWriteStatus();
 }
 
 servo_bus_status_t servo_bus_get_led_errors(uint8_t id, uint8_t* error_mask) {
