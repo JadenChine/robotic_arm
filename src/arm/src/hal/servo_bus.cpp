@@ -15,6 +15,10 @@ static bool usingControllerBackend(void) {
   return g_active_config.backend == SERVO_BUS_BACKEND_XARM_CONTROLLER;
 }
 
+static bool isBoardLedPin(uint8_t pin) {
+  return pin < 32u && (BOARD_STATUS_LED_MASK & (1u << pin)) != 0u;
+}
+
 static servo_bus_status_t mapDirectDriverError(void) {
   switch (g_direct_driver.getLastPacketError()) {
     case arm::kServoErrorTimeout:
@@ -103,10 +107,11 @@ servo_bus_status_t servo_bus_init(const servo_bus_config_t* config) {
   }
 
   const bool direct = config->backend == SERVO_BUS_BACKEND_DIRECT_SERVO;
-  if (direct && (config->tx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
-                 config->rx_enable_pin == SERVO_BUS_HEARTBEAT_LED_PIN ||
-                 config->tx_enable_pin == arm::PicoUartTransport::kNoEnablePin ||
-                 config->rx_enable_pin == arm::PicoUartTransport::kNoEnablePin)) {
+  if (isBoardLedPin(config->tx_pin) || isBoardLedPin(config->rx_pin) ||
+      (direct && (isBoardLedPin(config->tx_enable_pin) ||
+                  isBoardLedPin(config->rx_enable_pin) ||
+                  config->tx_enable_pin == arm::PicoUartTransport::kNoEnablePin ||
+                  config->rx_enable_pin == arm::PicoUartTransport::kNoEnablePin))) {
     return SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT;
   }
 

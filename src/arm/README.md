@@ -486,8 +486,8 @@ servo ground and motor-supply negative together. Motor power is separate from
 the regulated 5 V logic rail. Keep the AHCT 5 V rail powered while the bus is live.
 
 The firmware rejects duplicate OE pins, OE/UART pin collisions, non-header GPIOs,
-invalid UART pin mappings, and enable pins overlapping the heartbeat LED. Custom
-OE assignments must also avoid any additional hardware connected by the user.
+invalid UART pin mappings, and UART or enable pins overlapping the status LEDs.
+Custom OE assignments must also avoid any additional hardware connected by the user.
 Initialize config through `servo_bus_get_default_config` so the new enable fields
 are populated; they are ignored by the controller backend.
 
@@ -495,6 +495,22 @@ Hardware references: [Pico pinout](https://datasheets.raspberrypi.com/pico/Pico-
 [TI AHCT datasheet](https://www.ti.com/lit/ds/symlink/sn74ahct1g126.pdf),
 [TI LVC datasheet](https://www.ti.com/lit/ds/symlink/sn74lvc1g126.pdf), and the
 local [Hiwonder protocol](docs/Hiwonder_Bus_Servo_Communication_Protocol.md).
+
+### Status LEDs
+
+| Color | Pico GPIO | Header pin | Behavior |
+|---|---|---|---|
+| Yellow | GP17 | 22 | Toggles every 500 ms while the main loop is running. |
+| Green | GP18 | 24 | Turns on at firmware startup to show the Pico is powered and has booted. |
+| Blue 1 | GP19 | 25 | Blinks slowly with no control owner, blinks rapidly for 1.5 seconds after an ownership change, and stays solid while ownership is stable. |
+| Blue 2 | GP20 | 26 | On in individual joint control mode, including at boot and after a safe-pose reset. |
+| Blue 3 | GP21 | 27 | On in Cartesian control mode. |
+
+The firmware assumes active-high LED wiring. Green reports Pico startup only.
+Indicating that the servo supply is within range would require a rail-sense signal.
+The Bluetooth LED follows arm control ownership. A connected client can take
+control from another client. Release or owner disconnect returns the LED to
+slow blinking after the fast transition. The two mode LEDs are mutually exclusive.
 
 ### Direct bus verification
 

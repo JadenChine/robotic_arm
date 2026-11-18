@@ -68,7 +68,9 @@ The reference code in `src/HiBusServo/` is used only as source material during t
 - Active-HIGH TX_EN: GP2 (Pico header pin 4)
 - Active-HIGH RX_EN: GP3 (Pico header pin 5)
 - Default servo ID (for low-level tools): `1`
-- Heartbeat LED pin: `GPIO 16`
+- Status LEDs: yellow heartbeat on GP17, green Pico power on GP18, and blue
+  indicators for Bluetooth control (GP19), joint mode (GP20), and Cartesian
+  mode (GP21)
 
 These defaults are centralized in `src/arm/src/platform/servo_platform_config.h`.
 See `src/arm/README.md` for direct bus buffer wiring, xArm controller backend

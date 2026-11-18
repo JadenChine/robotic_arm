@@ -171,9 +171,25 @@ void testHalAndDrivers() {
   assert(servo_bus_get_voltage(1, &voltage) == SERVO_BUS_STATUS_ERROR_TIMEOUT);
   expectListening();
 
-  config.tx_enable_pin = SERVO_BUS_HEARTBEAT_LED_PIN;
+  for (const uint8_t ledPin : {17, 18, 19, 20, 21}) {
+    config = boardConfig;
+    config.tx_enable_pin = ledPin;
+    assert(servo_bus_init(&config) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+    config = boardConfig;
+    config.rx_enable_pin = ledPin;
+    assert(servo_bus_init(&config) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  }
+  config = boardConfig;
+  config.rx_pin = 17;  // Valid UART0 RX mux, reserved for the yellow LED.
+  assert(servo_bus_init(&config) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
+  config = boardConfig;
+  config.backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+  config.uart_index = 1;
+  config.tx_pin = 20;  // Valid UART1 TX mux, reserved for a blue LED.
+  config.rx_pin = 5;
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
   assert(servo_bus_get_active_config()->tx_enable_pin == 2);
+  config = boardConfig;
   config.tx_enable_pin = arm::PicoUartTransport::kNoEnablePin;
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_ERROR_INVALID_ARGUMENT);
   expectListening();

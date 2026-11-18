@@ -68,6 +68,29 @@ static arm_kinematics_solution_t g_last_valid_cartesian_solution = {0};
 static arm_kinematics_cartesian_t g_cartesian_target_mm = {0.0f, 0.0f, 429.0f};
 static bool g_cartesian_ik_holding = false;
 
+static void set_board_led(uint pin, bool on) {
+	gpio_put(pin, on ? BOARD_STATUS_LED_ACTIVE_LEVEL : !BOARD_STATUS_LED_ACTIVE_LEVEL);
+}
+
+static void update_arm_mode_leds(void) {
+	const uint32_t mode_led_mask = (1u << BOARD_JOINT_MODE_LED_PIN) |
+	                               (1u << BOARD_CARTESIAN_MODE_LED_PIN);
+	const uint active_pin = g_control_mode == ARM_BLE_CONTROL_MODE_CARTESIAN
+		? BOARD_CARTESIAN_MODE_LED_PIN : BOARD_JOINT_MODE_LED_PIN;
+	const uint32_t on_mask = 1u << active_pin;
+	gpio_put_masked(mode_led_mask,
+	                BOARD_STATUS_LED_ACTIVE_LEVEL ? on_mask : mode_led_mask ^ on_mask);
+}
+
+static void init_board_leds(void) {
+	gpio_init_mask(BOARD_STATUS_LED_MASK);
+	gpio_put_masked(BOARD_STATUS_LED_MASK,
+			BOARD_STATUS_LED_ACTIVE_LEVEL ? 0u : BOARD_STATUS_LED_MASK);
+	gpio_set_dir_out_masked(BOARD_STATUS_LED_MASK);
+	set_board_led(BOARD_POWER_LED_PIN, true);
+	update_arm_mode_leds();
+}
+
 // Clamps an integer value between a minimum and maximum range.
 static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum) {
 	if (value < minimum) {
@@ -233,6 +256,7 @@ static void apply_ble_control_mode(arm_ble_control_mode_t requested_mode) {
 	}
 
 	g_control_mode = requested_mode;
+	update_arm_mode_leds();
 }
 
 // Applies a Cartesian target through IK, leaving wrist/gripper joints under manual control.
@@ -279,6 +303,7 @@ static void apply_ble_safe_pose(void) {
 	}
 
 	g_control_mode = ARM_BLE_CONTROL_MODE_JOINT;
+	update_arm_mode_leds();
 	arm_kinematics_home_solution(&g_last_valid_cartesian_solution);
 	arm_kinematics_forward(&g_last_valid_cartesian_solution, &g_cartesian_target_mm);
 	g_cartesian_ik_holding = false;
@@ -408,18 +433,13 @@ static void run_control_tick(void) {
 	last_status = status;
 }
 
-// Updates the heartbeat LED state based on control tick frequency.
-static void update_heartbeat(bool* led_on, uint32_t* tick_counter) {
-	const uint32_t ticks_per_toggle = (CONTROL_TICK_HZ >= 2u) ? (CONTROL_TICK_HZ / 2u) : 1u;
-
-	++(*tick_counter);
-	if (*tick_counter < ticks_per_toggle) {
-		return;
+// Run on core0 so heartbeat stops if the main loop stalls.
+static void update_heartbeat(absolute_time_t* next_heartbeat, bool* heartbeat_on) {
+	if (time_reached(*next_heartbeat)) {
+		*heartbeat_on = !*heartbeat_on;
+		set_board_led(BOARD_HEARTBEAT_LED_PIN, *heartbeat_on);
+		*next_heartbeat = make_timeout_time_ms(BOARD_HEARTBEAT_INTERVAL_MS);
 	}
-
-	*tick_counter = 0;
-	*led_on = !(*led_on);
-	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, *led_on ? 1 : 0);
 }
 
 // Prints a startup banner with servo bus configuration details.
@@ -437,7 +457,7 @@ static void print_banner(const servo_bus_config_t* config) {
 	printf("  Control tick  : %u Hz (timer IRQ scheduled)\n", CONTROL_TICK_HZ);
 	printf("  Move time ms  : %u\n", CONTROL_MOVE_TIME_MS);
 	printf("  Deadband raw  : %d\n", CONTROL_RAW_DEADBAND);
-	printf("  Heartbeat LED : %u\n", SERVO_BUS_HEARTBEAT_LED_PIN);
+	printf("  Heartbeat LED : GP%u\n", BOARD_HEARTBEAT_LED_PIN);
 	printf("  Target regs   : g_joint_target_deci_deg[0..5] (deci-degrees, 0.1 deg units)\n");
 	printf("  BLE role      : peripheral (core1)\n");
 	printf("  BLE service   : 0xFFF0, ctrl=0xFFF1 owner=0xFFF2 joints=0xFFF3 xyz=0xFFF4\n");
@@ -448,17 +468,13 @@ static void print_banner(const servo_bus_config_t* config) {
 // Main entry point for the robotic arm firmware.
 int main(void) {
 	servo_bus_config_t config;
-	bool led_on = false;
-	uint32_t heartbeat_ticks = 0;
+	bool heartbeat_on = false;
 	servo_bus_status_t init_status;
 	repeating_timer_t control_tick_timer;
 
+	init_board_leds();
 	stdio_init_all();
 	sleep_ms(1500);
-
-	gpio_init(SERVO_BUS_HEARTBEAT_LED_PIN);
-	gpio_set_dir(SERVO_BUS_HEARTBEAT_LED_PIN, GPIO_OUT);
-	gpio_put(SERVO_BUS_HEARTBEAT_LED_PIN, 0);
 
 	servo_bus_get_default_config(&config);
 	print_banner(&config);
@@ -483,21 +499,20 @@ int main(void) {
 
 	const int64_t control_period_us = -((int64_t)(1000000u / CONTROL_TICK_HZ));
 	if (!add_repeating_timer_us(control_period_us, control_tick_timer_callback, NULL,
-					   &control_tick_timer)) {
+	                           &control_tick_timer)) {
 		printf("failed to start control tick timer\n");
 	} else {
 		printf("control timer started: %u Hz\n", CONTROL_TICK_HZ);
 	}
 
+	absolute_time_t next_heartbeat = make_timeout_time_ms(BOARD_HEARTBEAT_INTERVAL_MS);
 	while (true) {
 		process_ble_events();
 
-		if (consume_control_tick_due()) {
-			if (init_status == SERVO_BUS_STATUS_OK) {
-				run_control_tick();
-			}
-			update_heartbeat(&led_on, &heartbeat_ticks);
+		if (consume_control_tick_due() && init_status == SERVO_BUS_STATUS_OK) {
+			run_control_tick();
 		}
+		update_heartbeat(&next_heartbeat, &heartbeat_on);
 
 		tight_loop_contents();
 	}

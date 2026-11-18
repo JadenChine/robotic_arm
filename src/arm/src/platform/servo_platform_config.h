@@ -17,7 +17,18 @@
 #define SERVO_BUS_DEFAULT_MOVE_TIME_MS 700u
 #define SERVO_BUS_DEFAULT_STEP_DEGREES 15.0f
 
-#define SERVO_BUS_HEARTBEAT_LED_PIN 16u
-#define SERVO_BUS_HEARTBEAT_INTERVAL_MS 500u
+// Status LED pins use Pico GPIO numbers.
+#define BOARD_HEARTBEAT_LED_PIN 17u // Yellow, header pin 22
+#define BOARD_POWER_LED_PIN 18u // Green, header pin 24
+#define BOARD_BLUETOOTH_LED_PIN 19u // Blue, header pin 25
+#define BOARD_JOINT_MODE_LED_PIN 20u // Blue, header pin 26
+#define BOARD_CARTESIAN_MODE_LED_PIN 21u // Blue, header pin 27
+#define BOARD_STATUS_LED_ACTIVE_LEVEL 1u
+#define BOARD_STATUS_LED_MASK ((1u << BOARD_HEARTBEAT_LED_PIN) | \
+                               (1u << BOARD_POWER_LED_PIN) | \
+                               (1u << BOARD_BLUETOOTH_LED_PIN) | \
+                               (1u << BOARD_JOINT_MODE_LED_PIN) | \
+                               (1u << BOARD_CARTESIAN_MODE_LED_PIN))
+#define BOARD_HEARTBEAT_INTERVAL_MS 500u
 
 #endif
