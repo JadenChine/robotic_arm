@@ -27,11 +27,12 @@ Two UART protocol backends are supported:
 1. Direct smart-servo protocol
 2. xArm controller-board protocol
 
-Current default behavior targets xArm controller boards (for example xArm v1.6):
+The firmware defaults to the buffered direct servo bus.
 
-- backend: controller mode
-- bus baud rate: 9600
-- Pico UART pins: GP0 TX, GP1 RX
+- backend: direct servo mode
+- bus baud rate: 115200
+- Pico UART0 pins: GP0 TX (pin 1), GP1 RX (pin 2)
+- active-HIGH buffer enables: GP2 TX_EN (pin 4), GP3 RX_EN (pin 5)
 
 In addition, the firmware now exposes a BLE GATT server on Pico W hardware:
 
@@ -214,10 +215,10 @@ Defaults are defined in src/arm/src/platform/servo_platform_config.h.
 
 Current defaults:
 
-- SERVO_BUS_DEFAULT_BACKEND = controller mode
+- SERVO_BUS_DEFAULT_BACKEND = direct servo mode
 - SERVO_BUS_DEFAULT_UART_INDEX = 0
-- SERVO_BUS_DEFAULT_TX_PIN = 0 (GP0)
-- SERVO_BUS_DEFAULT_RX_PIN = 1 (GP1)
+- SERVO_BUS_DEFAULT_TX_PIN = 0 (GP0, physical pin 1)
+- SERVO_BUS_DEFAULT_RX_PIN = 1 (GP1, physical pin 2)
 - SERVO_BUS_DIRECT_DEFAULT_TX_ENABLE_PIN = 2 (GP2, physical pin 4)
 - SERVO_BUS_DIRECT_DEFAULT_RX_ENABLE_PIN = 3 (GP3, physical pin 5)
 - SERVO_BUS_CONTROLLER_DEFAULT_BAUD_RATE = 9600
@@ -228,21 +229,19 @@ initialization leaves them untouched. Reinitializing from direct to controller
 mode first disables both old buffers and leaves their enable pins as inputs with
 pull-downs.
 
-To select direct mode explicitly, start with the default config and override both
+To use an xArm controller board, start with the default config and override both
 the backend and baud before calling `servo_bus_init`:
 
 ```c
 servo_bus_config_t config;
 servo_bus_get_default_config(&config);
-config.backend = SERVO_BUS_BACKEND_DIRECT_SERVO;
-config.baud_rate = 0; // Select the backend's default: 115200 for direct mode.
-// config.tx_enable_pin = 2; // Already populated by get_default_config.
-// config.rx_enable_pin = 3;
+config.backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+config.baud_rate = 0; // Select the controller backend's 9600 baud.
 servo_bus_status_t status = servo_bus_init(&config);
 ```
 
-Changing only `config.backend` after fetching the controller defaults would retain
-9600 baud. The checked-in application continues to select the controller backend.
+Changing only `config.backend` after fetching the board defaults would retain
+115200 baud.
 
 ### Direct bus direction and timing
 
@@ -451,7 +450,7 @@ The IK solver is damped least squares in the yaw-aligned pitch plane. It is seed
 
 ## Wiring Guidance
 
-For controller backend (default):
+For the optional xArm controller backend:
 
 - Pico GP0 (TX) -> controller RX
 - Pico GP1 (RX) -> controller TX
@@ -510,7 +509,7 @@ ctest --test-dir /tmp/robotic-arm-uart-tests --output-on-failure
 
 Tests check safe startup, OE ordering, waiting through the final stop bit,
 immediate reply preservation, no-reply/multi-servo commands, timeouts, invalid
-pin assignments, backend switching and the controller default/packet format.
+pin assignments, the board defaults, backend switching and controller packet format.
 Command regression cases also cover LED polarity, discovery replies, invalid
 parameters, movement-time limits, and preservation of centered degree coordinates.
 These tests and a Pico W firmware build do not establish electrical performance

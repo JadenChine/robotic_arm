@@ -118,21 +118,24 @@ void testTransport() {
 void testHalAndDrivers() {
   servo_bus_config_t config;
   servo_bus_get_default_config(&config);
-  assert(config.backend == SERVO_BUS_BACKEND_XARM_CONTROLLER);
-  assert(config.baud_rate == 9600);
+  assert(config.backend == SERVO_BUS_BACKEND_DIRECT_SERVO);
+  assert(config.uart_index == 0 && config.baud_rate == 115200);
   assert(config.tx_pin == 0 && config.rx_pin == 1);
   assert(config.tx_enable_pin == 2 && config.rx_enable_pin == 3);
+  const servo_bus_config_t boardConfig = config;
+  config.backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+  config.baud_rate = 0;
   halfDuplex = false;
   events.clear();
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
+  assert(servo_bus_get_active_config()->baud_rate == 9600);
   assert(std::none_of(events.begin(), events.end(), [](const std::string& event) {
     return event.find("gpio:2=") == 0 || event.find("gpio:3=") == 0;
   }));
   assert(servo_bus_move_raw(1, 500, 700) == SERVO_BUS_STATUS_OK);
   assert(wirePackets.back() == std::vector<uint8_t>({0x55, 0x55, 8, 3, 1, 0xbc, 2, 1, 0xf4, 1}));
 
-  config.backend = SERVO_BUS_BACKEND_DIRECT_SERVO;
-  config.baud_rate = 0;  // Resolve to the backend's 115200-baud default.
+  config = boardConfig;
   halfDuplex = true;
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
   assert(servo_bus_get_active_config()->baud_rate == 115200);
@@ -176,6 +179,8 @@ void testHalAndDrivers() {
   expectListening();
 
   servo_bus_get_default_config(&config);
+  config.backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+  config.baud_rate = 0;
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
   assert(!pins[2].level && !pins[3].level);
   halfDuplex = false;
@@ -280,6 +285,8 @@ void testProtocolCorrections() {
   expectListening();
 
   servo_bus_get_default_config(&config);
+  config.backend = SERVO_BUS_BACKEND_XARM_CONTROLLER;
+  config.baud_rate = 0;
   assert(servo_bus_init(&config) == SERVO_BUS_STATUS_OK);
   halfDuplex = false;
   // The direct protocol's time limit must not change the controller protocol.

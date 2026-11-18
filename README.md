@@ -60,18 +60,19 @@ The reference code in `src/HiBusServo/` is used only as source material during t
 
 ### Default hardware assumptions
 
-- Servo bus backend: controller mode
+- Servo bus backend: direct servo mode
 - Servo bus UART index: `0`
-- Servo bus baud rate: `9600`
-- Servo bus TX pin: `GPIO 0` (GP0)
-- Servo bus RX pin: `GPIO 1` (GP1)
-- Direct backend only: `GPIO 2` TX buffer enable, `GPIO 3` RX buffer enable (active HIGH)
+- Servo bus baud rate: `115200`
+- Servo bus TX: GP0 (Pico header pin 1)
+- Servo bus RX: GP1 (Pico header pin 2)
+- Active-HIGH TX_EN: GP2 (Pico header pin 4)
+- Active-HIGH RX_EN: GP3 (Pico header pin 5)
 - Default servo ID (for low-level tools): `1`
 - Heartbeat LED pin: `GPIO 16`
 
 These defaults are centralized in `src/arm/src/platform/servo_platform_config.h`.
-The controller backend remains the default. See `src/arm/README.md` for direct
-bus buffer wiring, backend selection, turnaround timing and host regression tests.
+See `src/arm/README.md` for direct bus buffer wiring, xArm controller backend
+selection, turnaround timing and host regression tests.
 
 ### Environment requirements
 
