@@ -39,6 +39,7 @@ constexpr uint8_t kServoLedErrorRead = 36;
 
 constexpr int kServoErrorTimeout = -1;
 constexpr int kServoErrorOverflow = -2;
+constexpr int kServoErrorInvalidArgument = -3;
 constexpr int16_t kServoPositionInvalidRaw = -32768;
 constexpr float kServoPositionInvalidDegrees = -999.0f;
 constexpr uint8_t kServoOffsetInvalid = 127;

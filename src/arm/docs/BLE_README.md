@@ -236,10 +236,6 @@ The BLE link has no security. Anyone in radio range can connect, take control, a
 
 This is valid with `pico_cyw43_arch_none` (threadsafe-background is not linked, so no IRQ contention), but if you ever switch to `pico_cyw43_arch_threadsafe_background`, the CYW43 arch must be initialised on core 0. Document this constraint.
 
-### Issue 6 — Heartbeat LED pin 16 is CYW43-managed on Pico W
-
-`servo_platform_config.h` sets `SERVO_BUS_HEARTBEAT_LED_PIN` to 16. On a Pico W, GPIO 25 is the on-board LED but it's driven through the CYW43 chip (not via `gpio_put`). GPIO 16 is a normal GPIO pin, so this only works if you have an external LED on GP16. If you intend to use the on-board LED, you need `cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, ...)` instead of `gpio_put(16, ...)`. The current code won't crash, but the on-board LED won't blink.
-
 ---
 
 ## How to Verify Everything Works
@@ -291,12 +287,14 @@ swift run
 ### Step 6: Test release
 - Reconnect and take control. Move a slider. Press "Release".
 - The arm should return to center (safe pose).
+- The blue Bluetooth LED on GP19 (Pico header pin 25) blinks slowly when no
+  client owns control. Taking control or handing it off triggers 1.5 seconds
+  of rapid blinking followed by a solid light. Release or owner disconnect
+  triggers rapid blinking followed by slow blinking.
+- The joint-mode LED on GP20 lights at startup and after the safe-pose reset.
+  Switching to Cartesian mode turns GP20 off and lights GP21.
 
 ### Step 7: Verify ignored unauthorized writes
 - Connect a second BLE client (e.g. nRF Connect on iPhone).
 - Have the Mac take control. Try writing 12 bytes to `0xFFF3` from nRF Connect.
 - The write should succeed at the ATT level, but the arm should not move (ignored because it's not the owner).
-
----
-
-**Bottom line:** The implementation is solid and well-structured. The data pipeline from slider to servo is correctly encoded, queued across cores, and transmitted. The main items to address before real use are BLE link security (Issue 4) and awareness that the LED heartbeat won't toggle the on-board LED on Pico W (Issue 6).

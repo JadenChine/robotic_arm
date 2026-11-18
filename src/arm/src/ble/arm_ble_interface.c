@@ -8,6 +8,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/rand.h"
 #include "pico/stdlib.h"
+#include "platform/servo_platform_config.h"
 
 #define ARM_BLE_MAX_CONNECTIONS 2u
 #define ARM_BLE_CONTROL_CMD_TAKE_CONTROL 0x01u
@@ -15,6 +16,9 @@
 #define ARM_BLE_CONTROL_CMD_SET_MODE 0x03u
 #define ARM_BLE_TARGET_PACKET_SIZE_BYTES (ARM_BLE_JOINT_COUNT * sizeof(int16_t))
 #define ARM_BLE_CARTESIAN_PACKET_SIZE_BYTES (ARM_BLE_CARTESIAN_AXIS_COUNT * sizeof(int16_t))
+#define BLUETOOTH_LED_SLOW_TOGGLE_MS 500u
+#define BLUETOOTH_LED_FAST_TOGGLE_MS 100u
+#define BLUETOOTH_LED_TRANSITION_MS 1500u
 
 typedef struct arm_ble_connection_slot {
   bool in_use;
@@ -28,9 +32,44 @@ static arm_ble_connection_slot_t g_connections[ARM_BLE_MAX_CONNECTIONS] = {0};
 static hci_con_handle_t g_owner_handle = HCI_CON_HANDLE_INVALID;
 
 static btstack_packet_callback_registration_t g_hci_event_callback_registration;
+static btstack_timer_source_t g_bluetooth_led_timer;
+static uint32_t g_owner_change_ms;
+static bool g_bluetooth_led_fast;
+static bool g_bluetooth_led_on;
 
 static uint32_t now_ms(void) {
   return to_ms_since_boot(get_absolute_time());
+}
+
+// The BLE run loop owns both the timer and the control owner.
+static void update_bluetooth_led(btstack_timer_source_t* timer) {
+  const bool has_owner = g_owner_handle != HCI_CON_HANDLE_INVALID;
+  if (g_bluetooth_led_fast &&
+      now_ms() - g_owner_change_ms >= BLUETOOTH_LED_TRANSITION_MS) {
+    g_bluetooth_led_fast = false;
+    g_bluetooth_led_on = true;
+  } else {
+    g_bluetooth_led_on = !g_bluetooth_led_on;
+  }
+
+  const bool blinking = g_bluetooth_led_fast || !has_owner;
+  const bool led_on = !blinking || g_bluetooth_led_on;
+  gpio_put(BOARD_BLUETOOTH_LED_PIN,
+           led_on ? BOARD_STATUS_LED_ACTIVE_LEVEL : !BOARD_STATUS_LED_ACTIVE_LEVEL);
+  if (blinking) {
+    const uint32_t toggle_ms = g_bluetooth_led_fast ? BLUETOOTH_LED_FAST_TOGGLE_MS
+                                                  : BLUETOOTH_LED_SLOW_TOGGLE_MS;
+    btstack_run_loop_set_timer(timer, toggle_ms);
+    btstack_run_loop_add_timer(timer);
+  }
+}
+
+static void start_bluetooth_led_transition(void) {
+  btstack_run_loop_remove_timer(&g_bluetooth_led_timer);
+  g_owner_change_ms = now_ms();
+  g_bluetooth_led_fast = true;
+  g_bluetooth_led_on = false;
+  update_bluetooth_led(&g_bluetooth_led_timer);
 }
 
 static void set_random_static_ble_address(void) {
@@ -115,7 +154,10 @@ static void clear_owner(bool enqueue_safe_pose, const char* reason) {
     return;
   }
 
-  g_owner_handle = HCI_CON_HANDLE_INVALID;
+  if (g_owner_handle != HCI_CON_HANDLE_INVALID) {
+    g_owner_handle = HCI_CON_HANDLE_INVALID;
+    start_bluetooth_led_transition();
+  }
 
   if (enqueue_safe_pose) {
     arm_ble_event_t safe_pose_event = {
@@ -137,7 +179,10 @@ static bool grant_owner(hci_con_handle_t connection_handle) {
     return false;
   }
 
-  g_owner_handle = connection_handle;
+  if (g_owner_handle != connection_handle) {
+    g_owner_handle = connection_handle;
+    start_bluetooth_led_transition();
+  }
 
   printf("ble ownership granted to handle=%u\n", connection_handle);
   return true;
@@ -429,6 +474,8 @@ void arm_ble_core1_entry(void) {
   printf("ble init ok on core1\n");
 
   arm_ble_setup();
+  btstack_run_loop_set_timer_handler(&g_bluetooth_led_timer, update_bluetooth_led);
+  update_bluetooth_led(&g_bluetooth_led_timer);
   hci_power_control(HCI_POWER_ON);
 
   printf("ble advertising started (service 0xFFF0)\n");

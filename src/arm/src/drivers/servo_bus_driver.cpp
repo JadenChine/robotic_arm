@@ -37,6 +37,28 @@ uint16_t makeWord(uint8_t high, uint8_t low) {
   return static_cast<uint16_t>((static_cast<uint16_t>(high) << 8) | low);
 }
 
+bool isReadCommand(uint8_t command) {
+  switch (command) {
+    case kServoMoveTimeRead:
+    case kServoMoveTimeWaitRead:
+    case kServoIdRead:
+    case kServoAngleOffsetRead:
+    case kServoAngleLimitRead:
+    case kServoVinLimitRead:
+    case kServoTempMaxLimitRead:
+    case kServoTempRead:
+    case kServoVinRead:
+    case kServoPosRead:
+    case kServoOrMotorModeRead:
+    case kServoLoadOrUnloadRead:
+    case kServoLedCtrlRead:
+    case kServoLedErrorRead:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 ServoBusDriver::ServoBusDriver(ServoTransport& transport)
@@ -91,6 +113,7 @@ int8_t ServoBusDriver::getAngleOffset(uint8_t id) {
 
 void ServoBusDriver::move(uint8_t id, int16_t position, uint16_t timeMs) {
   const int16_t clampedPosition = clampValue<int16_t>(position, 0, 1000);
+  timeMs = clampValue<uint16_t>(timeMs, 0, 30000);
   uint8_t params[4] = {
       lowByteFrom16(clampedPosition), highByteFrom16(clampedPosition),
       lowByteFromU16(timeMs),         highByteFromU16(timeMs),
@@ -103,6 +126,10 @@ void ServoBusDriver::stop(uint8_t id) {
 }
 
 void ServoBusDriver::setId(uint8_t oldId, uint8_t newId) {
+  if (!isValidServoId(newId)) {
+    last_packet_error_ = kServoErrorInvalidArgument;
+    return;
+  }
   const uint8_t params[1] = {newId};
   sendPacket(oldId, kServoIdWrite, params, 1);
 }
@@ -127,6 +154,10 @@ void ServoBusDriver::saveAngleOffset(uint8_t id) {
 void ServoBusDriver::setAngleLimits(uint8_t id, int16_t minAngle, int16_t maxAngle) {
   const int16_t clampedMin = clampValue<int16_t>(minAngle, 0, 1000);
   const int16_t clampedMax = clampValue<int16_t>(maxAngle, 0, 1000);
+  if (clampedMin >= clampedMax) {
+    last_packet_error_ = kServoErrorInvalidArgument;
+    return;
+  }
   uint8_t params[4] = {lowByteFrom16(clampedMin), highByteFrom16(clampedMin),
                        lowByteFrom16(clampedMax), highByteFrom16(clampedMax)};
   sendPacket(id, kServoAngleLimitWrite, params, 4);
@@ -147,6 +178,10 @@ void ServoBusDriver::setVoltageLimits(uint8_t id, int16_t minVoltage,
                                       int16_t maxVoltage) {
   const int16_t clampedMin = clampValue<int16_t>(minVoltage, 4500, 12000);
   const int16_t clampedMax = clampValue<int16_t>(maxVoltage, 4500, 12000);
+  if (clampedMin >= clampedMax) {
+    last_packet_error_ = kServoErrorInvalidArgument;
+    return;
+  }
   uint8_t params[4] = {lowByteFrom16(clampedMin), highByteFrom16(clampedMin),
                        lowByteFrom16(clampedMax), highByteFrom16(clampedMax)};
   sendPacket(id, kServoVinLimitWrite, params, 4);
@@ -227,16 +262,20 @@ bool ServoBusDriver::isMotorOn(uint8_t id) {
 }
 
 void ServoBusDriver::ledOn(uint8_t id) {
-  const uint8_t params[1] = {1};
-  sendPacket(id, kServoLedCtrlWrite, params, 1);
-}
-
-void ServoBusDriver::ledOff(uint8_t id) {
   const uint8_t params[1] = {0};
   sendPacket(id, kServoLedCtrlWrite, params, 1);
 }
 
+void ServoBusDriver::ledOff(uint8_t id) {
+  const uint8_t params[1] = {1};
+  sendPacket(id, kServoLedCtrlWrite, params, 1);
+}
+
 void ServoBusDriver::setLedErrors(uint8_t id, uint8_t error) {
+  if (error > 7) {
+    last_packet_error_ = kServoErrorInvalidArgument;
+    return;
+  }
   const uint8_t params[1] = {error};
   sendPacket(id, kServoLedErrorWrite, params, 1);
 }
@@ -248,10 +287,7 @@ uint8_t ServoBusDriver::getLedErrors(uint8_t id) {
 }
 
 void ServoBusDriver::broadcastMove(int16_t position, uint16_t timeMs) {
-  const int16_t clampedPosition = clampValue<int16_t>(position, 0, 1000);
-  uint8_t params[4] = {lowByteFrom16(clampedPosition), highByteFrom16(clampedPosition),
-                       lowByteFromU16(timeMs), highByteFromU16(timeMs)};
-  sendPacket(kServoBroadcastId, kServoMoveTimeWrite, params, 4);
+  move(kServoBroadcastId, position, timeMs);
 }
 
 void ServoBusDriver::broadcastMoveDegrees(float degrees, uint16_t timeMs) {
@@ -263,17 +299,16 @@ void ServoBusDriver::broadcastStop() {
 }
 
 void ServoBusDriver::broadcastLedOn() {
-  const uint8_t params[1] = {1};
-  sendPacket(kServoBroadcastId, kServoLedCtrlWrite, params, 1);
+  ledOn(kServoBroadcastId);
 }
 
 void ServoBusDriver::broadcastLedOff() {
-  const uint8_t params[1] = {0};
-  sendPacket(kServoBroadcastId, kServoLedCtrlWrite, params, 1);
+  ledOff(kServoBroadcastId);
 }
 
 void ServoBusDriver::moveWait(uint8_t id, int16_t position, uint16_t timeMs) {
   const int16_t clampedPosition = clampValue<int16_t>(position, 0, 1000);
+  timeMs = clampValue<uint16_t>(timeMs, 0, 30000);
   uint8_t params[4] = {lowByteFrom16(clampedPosition), highByteFrom16(clampedPosition),
                        lowByteFromU16(timeMs), highByteFromU16(timeMs)};
   sendPacket(id, kServoMoveTimeWaitWrite, params, 4);
@@ -319,19 +354,22 @@ bool ServoBusDriver::isConnected(uint8_t id) {
 bool ServoBusDriver::moveMultiple(const uint8_t* ids, const int16_t* positions,
                                   uint16_t timeMs, int count) {
   if (ids == nullptr || positions == nullptr || count <= 0) {
+    last_packet_error_ = kServoErrorInvalidArgument;
     return false;
   }
 
-  bool allValid = true;
+  // Validate the entire group before queuing anything or broadcasting START.
   for (int index = 0; index < count; ++index) {
     if (!isValidServoId(ids[index])) {
-      allValid = false;
-      continue;
+      last_packet_error_ = kServoErrorInvalidArgument;
+      return false;
     }
+  }
+  for (int index = 0; index < count; ++index) {
     moveWait(ids[index], positions[index], timeMs);
   }
   startMove(kServoBroadcastId);
-  return allValid;
+  return true;
 }
 
 int ServoBusDriver::getLastPacketError() const {
@@ -340,6 +378,14 @@ int ServoBusDriver::getLastPacketError() const {
 
 void ServoBusDriver::sendPacket(uint8_t id, uint8_t command, const uint8_t* params,
                                 uint8_t paramLen) {
+  // Ordinary broadcast reads have no reply. ID discovery is the sole exception
+  // and must be used with only one servo connected to avoid bus collisions.
+  if (id == kServoIdInvalid ||
+      (id == kServoBroadcastId && isReadCommand(command) && command != kServoIdRead)) {
+    last_packet_error_ = kServoErrorInvalidArgument;
+    return;
+  }
+  last_packet_error_ = 0;
   transport_->clearRx();
 
   uint8_t txBuffer[32] = {0};
@@ -360,6 +406,10 @@ int ServoBusDriver::receivePacket(uint8_t id, uint8_t command, uint8_t* data,
                                   int paramLen) {
   constexpr uint32_t kResponseTimeoutMs = 20;
 
+  // A rejected request was not transmitted; do not wait or overwrite its error.
+  if (last_packet_error_ != 0) {
+    return -1;
+  }
   const uint32_t startTime = transport_->millis();
   int receivedBytes = 0;
   int packetLength = 0;
@@ -383,7 +433,8 @@ int ServoBusDriver::receivePacket(uint8_t id, uint8_t command, uint8_t* data,
         }
         break;
       case 2:
-        if (byte == id) {
+        if (byte == id || (id == kServoBroadcastId && command == kServoIdRead &&
+                          isValidServoId(byte))) {
           checksumValue = static_cast<uint8_t>(checksumValue + byte);
           ++receivedBytes;
         } else {

@@ -174,8 +174,9 @@ struct ContentView: View {
                         bleManager.updateJointTargetsDegrees(updatedAngles)
                     }
                 ),
-                in: range.min...range.max,
-                step: 0.1
+                // A continuous slider avoids thousands of automatic macOS ticks.
+                // The value label and BLE packet still round to 0.1 degrees.
+                in: range.min...range.max
             )
         }
     }
@@ -199,8 +200,7 @@ struct ContentView: View {
                         updateCartesianTarget(axisIndex: index, value: newValue)
                     }
                 ),
-                in: range.min...range.max,
-                step: 1.0
+                in: range.min...range.max
             )
         }
     }

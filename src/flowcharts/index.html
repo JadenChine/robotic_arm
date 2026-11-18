@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robotic arm · Software flowcharts</title>
+  <style>
+    :root { color-scheme: light; --ink: #203247; --muted: #53677b; --line: #60768b; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef2f6; color: var(--ink); font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px 28px; }
+    header { margin-bottom: 24px; }
+    .eyebrow { margin: 0 0 5px; color: #42617e; font-size: 11px; font-weight: 750; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 0 0 6px; font-size: 29px; letter-spacing: -.035em; line-height: 1.2; }
+    header p { margin: 0; color: var(--muted); }
+    .chart { --accent: #2563a4; --tint: #edf5ff; margin: 0 0 20px; padding: 20px 24px 15px; background: #fff; border: 1px solid #d8e1ea; border-radius: 15px; box-shadow: 0 5px 18px #20324706; break-inside: avoid; page-break-inside: avoid; }
+    .chart.ble { --accent: #187a72; --tint: #edf9f6; }
+    .chart.pico { --accent: #7753a5; --tint: #f5f0fc; }
+    .chart-heading { display: flex; align-items: center; gap: 12px; }
+    .number { display: grid; place-items: center; width: 33px; height: 33px; flex: 0 0 auto; border-radius: 9px; background: var(--tint); color: var(--accent); font-size: 13px; font-weight: 800; }
+    h2 { margin: 0; font-size: 19px; line-height: 1.25; letter-spacing: -.02em; }
+    .summary { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+    .diagram { overflow-x: auto; margin-top: 12px; }
+    svg { display: block; width: 100%; height: auto; min-width: 660px; overflow: visible; font-family: inherit; }
+    svg .node { fill: var(--tint); stroke: var(--accent); stroke-width: 1.3; }
+    svg .neutral { fill: #f6f8fa; stroke: #a1b1bf; }
+    svg .safety { fill: #fff6e8; stroke: #b98937; }
+    svg text { text-anchor: middle; fill: var(--ink); font-size: 15px; font-weight: 650; }
+    svg .detail { fill: var(--muted); font-size: 13px; font-weight: 400; }
+    svg .label { fill: var(--muted); font-size: 12px; font-weight: 550; }
+    svg .lane { fill: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+    svg .edge { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-linejoin: round; marker-end: url(#arrow); }
+    svg .join { fill: none; stroke: var(--line); stroke-width: 1.5; }
+    svg .loop { stroke-dasharray: 5 4; }
+    .note { margin: 7px 0 0; padding-top: 9px; border-top: 1px solid #e6ecf1; color: var(--muted); font-size: 12px; }
+    .note strong { color: var(--ink); font-weight: 650; }
+    .sources { margin: 5px 0 0; color: #6a7c8c; font-size: 10px; }
+    a { color: inherit; text-decoration-color: #b1bfcc; text-underline-offset: 2px; }
+    footer { color: var(--muted); font-size: 11px; }
+    .definitions { position: absolute; width: 0; height: 0; overflow: hidden; }
+    @media (max-width: 720px) {
+      main { padding: 20px 12px; }
+      h1 { font-size: 25px; }
+      .chart { padding: 16px 12px 12px; }
+    }
+    @page { size: letter portrait; margin: 12mm; }
+    @media print {
+      body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      main { max-width: none; margin: 0; padding: 0; }
+      header { margin-bottom: 5mm; }
+      h1 { font-size: 20px; }
+      header p { font-size: 10px; }
+      .eyebrow { font-size: 8px; }
+      .chart { margin-bottom: 4mm; padding: 3mm 4mm; border-radius: 3mm; box-shadow: none; }
+      h2 { font-size: 15px; }
+      .number { width: 26px; height: 26px; font-size: 10px; }
+      .summary, .note { font-size: 9px; }
+      .sources { font-size: 8px; }
+      .diagram { margin-top: 2mm; overflow: visible; }
+      svg { min-width: 0; }
+      .note { margin-top: 1mm; padding-top: 2mm; }
+      footer { font-size: 8px; }
+      a { text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <svg class="definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60768b"/></marker></defs>
+  </svg>
+  <main>
+    <header>
+      <p class="eyebrow">Robotic arm / Software overview</p>
+      <h1>From slider to servo</h1>
+      <p>Three high-level views of the Mac controller, Bluetooth link, and Pico firmware.</p>
+    </header>
+
+    <section class="chart" aria-labelledby="mac-title">
+      <div class="chart-heading"><span class="number">01</span><div>
+        <h2 id="mac-title">Mac application</h2>
+        <p class="summary">Find the arm, take control, and turn user input into target packets.</p>
+      </div></div>
+      <div class="diagram">
+        <svg viewBox="0 0 960 344" role="img" aria-labelledby="mac-svg-title mac-svg-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="mac-svg-title">Mac application flow</title>
+          <desc id="mac-svg-desc">Launch, scan, select and connect, then press Take Control. Edit joint or XYZ targets, retain the latest values, and send pending changes while owner and Bluetooth are ready. Repeat as controls change. After disconnection, scan again.</desc>
+          <path class="edge" d="M184 77H224"/><path class="edge" d="M420 77H460"/><path class="edge" d="M660 77H700"/>
+          <path class="edge" d="M818 126V154H159V185"/>
+          <path class="edge" d="M294 234H340"/><path class="edge" d="M600 234H650"/>
+          <path class="edge loop" d="M793 283V316H159V283"/>
+          <text class="label" x="477" y="336">Repeat as controls change · flush pending updates at ~60 Hz</text>
+
+          <rect class="node neutral" x="24" y="28" width="160" height="98" rx="16"/>
+          <text x="104" y="53">Launch app</text>
+          <text class="detail" x="104" y="75"><tspan x="104">Open the window and</tspan><tspan x="104" dy="16">prepare the Mac's</tspan><tspan x="104" dy="16">Bluetooth connection.</tspan></text>
+          <rect class="node" x="224" y="28" width="196" height="98" rx="9"/>
+          <text x="322" y="53">Scan for arm</text>
+          <text class="detail" x="322" y="75"><tspan x="322">Search for nearby arms</tspan><tspan x="322" dy="16">that advertise the</tspan><tspan x="322" dy="16">expected control service.</tspan></text>
+          <rect class="node" x="460" y="28" width="200" height="98" rx="9"/>
+          <text x="560" y="53">Select &amp; connect</text>
+          <text class="detail" x="560" y="75"><tspan x="560">Connect to the selected</tspan><tspan x="560" dy="16">arm and find where to</tspan><tspan x="560" dy="16">send control commands.</tspan></text>
+          <rect class="node" x="700" y="28" width="236" height="98" rx="9"/>
+          <text x="818" y="53">Press Take Control</text>
+          <text class="detail" x="818" y="75"><tspan x="818">Ask the arm to accept commands</tspan><tspan x="818" dy="16">from this Mac, then send the</tspan><tspan x="818" dy="16">selected mode and current pose.</tspan></text>
+          <rect class="node" x="24" y="185" width="270" height="98" rx="9"/>
+          <text x="159" y="210">Edit targets / select mode</text>
+          <text class="detail" x="159" y="232"><tspan x="159">Use sliders to choose joint angles</tspan><tspan x="159" dy="16">or the tip's X/Y/Z position, with</tspan><tspan x="159" dy="16">separate wrist and gripper controls.</tspan></text>
+          <rect class="node" x="340" y="185" width="260" height="98" rx="9"/>
+          <text x="470" y="210">Keep latest values</text>
+          <text class="detail" x="470" y="232"><tspan x="470">Keep the newest slider values,</tspan><tspan x="470" dy="16">limit their ranges, and pack them</tspan><tspan x="470" dy="16">into Bluetooth messages.</tspan></text>
+          <rect class="node" x="650" y="185" width="286" height="98" rx="9"/>
+          <text x="793" y="210">Send pending changes</text>
+          <text class="detail" x="793" y="232"><tspan x="793">Send updates when this Mac owns</tspan><tspan x="793" dy="16">control and Bluetooth can accept</tspan><tspan x="793" dy="16">more data; otherwise wait.</tspan></text>
+        </svg>
+      </div>
+      <p class="note"><strong>While connected:</strong> poll ownership every 0.5 s and display status/errors. Bluetooth backpressure delays sending; newer slider values replace older pending values. After a disconnect, scanning resumes.</p>
+      <p class="sources">Code: <a href="../mac-app/src/ContentView.swift">ContentView.swift</a> · <a href="../mac-app/src/BLEManager.swift">BLEManager.swift</a></p>
+    </section>
+
+    <section class="chart ble" aria-labelledby="ble-title">
+      <div class="chart-heading"><span class="number">02</span><div>
+        <h2 id="ble-title">Bluetooth: Mac ↔ Pico</h2>
+        <p class="summary">BLE = Bluetooth Low Energy. The Mac is the central; the Pico is the peripheral.</p>
+      </div></div>
+      <div class="diagram">
+        <svg viewBox="0 0 960 385" role="img" aria-labelledby="ble-svg-title ble-svg-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="ble-svg-title">Bluetooth interaction flow</title>
+          <desc id="ble-svg-desc">The Pico advertises ArmCtrl service FFF0. The Mac scans and connects. Control commands travel from Mac to Pico; ownership status is read back. The latest Take Control request becomes owner. Joint and XYZ packets from the owner are checked and queued for the Pico control loop. Non-owner target packets are ignored. Owner release or disconnection queues a safe pose.</desc>
+          <text class="lane" x="225" y="22">MAC APPLICATION</text><text class="lane" x="735" y="22">ARM PICO</text>
+          <path class="edge" d="M540 74H420"/><text class="label" x="480" y="65">advertise</text>
+          <path class="edge" d="M420 114H540"/><text class="label" x="480" y="105">connect</text>
+          <path class="edge" d="M420 185H540"/><text class="label" x="480" y="176">commands</text>
+          <path class="edge" d="M540 225H420"/><text class="label" x="480" y="216">read status</text>
+          <path class="edge" d="M420 323H540"/><text class="label" x="480" y="313">targets</text>
+          <path class="edge" d="M225 131V159"/><path class="edge" d="M735 131V159"/>
+          <path class="edge" d="M225 243V281"/><path class="edge" d="M735 243V281"/>
+
+          <rect class="node" x="30" y="47" width="390" height="84" rx="9"/>
+          <text x="225" y="72">Scan, connect &amp; discover service</text>
+          <text class="detail" x="225" y="94"><tspan x="225">Find the arm, open a Bluetooth connection,</tspan><tspan x="225" dy="16">and discover where commands can be sent.</tspan></text>
+          <rect class="node" x="540" y="47" width="390" height="84" rx="9"/>
+          <text x="735" y="72">Advertise “ArmCtrl”</text>
+          <text class="detail" x="735" y="94"><tspan x="735">Broadcast the arm's name and control service</tspan><tspan x="735" dy="16">so nearby controllers can find and connect to it.</tspan></text>
+          <rect class="node" x="30" y="159" width="390" height="84" rx="9"/>
+          <text x="225" y="184">Take / release control · set mode</text>
+          <text class="detail" x="225" y="206"><tspan x="225">Send ownership and mode requests, and check</tspan><tspan x="225" dy="16">every 0.5 s whether this Mac still has control.</tspan></text>
+          <rect class="node" x="540" y="159" width="390" height="84" rx="9"/>
+          <text x="735" y="184">Track one current owner</text>
+          <text class="detail" x="735" y="206"><tspan x="735">Accept movement commands from one controller;</tspan><tspan x="735" dy="16">a new Take Control request replaces the owner.</tspan></text>
+          <rect class="node" x="30" y="281" width="390" height="84" rx="9"/>
+          <text x="225" y="306">Write latest joint / XYZ targets</text>
+          <text class="detail" x="225" y="328"><tspan x="225">Send the chosen joint angles or tip position</tspan><tspan x="225" dy="16">as small Bluetooth messages when values change.</tspan></text>
+          <rect class="node" x="540" y="281" width="390" height="84" rx="9"/>
+          <text x="735" y="306">Check owner → queue valid targets</text>
+          <text class="detail" x="735" y="328"><tspan x="735">Ignore targets from other controllers and pass</tspan><tspan x="735" dy="16">valid owner commands to the arm's control loop.</tspan></text>
+        </svg>
+      </div>
+      <p class="note"><strong>Owner releases or disconnects →</strong> Pico clears ownership and queues the safe pose (all logical joint targets = 0°). There is no inactivity timeout. The return path reports ownership, not measured arm position.</p>
+      <p class="sources">Code: <a href="../mac-app/src/BLEManager.swift">BLEManager.swift</a> · <a href="../arm/src/ble/arm_ble_interface.c">arm_ble_interface.c</a> · <a href="../arm/src/ble/arm_control_service.gatt">arm_control_service.gatt</a></p>
+    </section>
+
+    <section class="chart pico" aria-labelledby="pico-title">
+      <div class="chart-heading"><span class="number">03</span><div>
+        <h2 id="pico-title">Pico firmware &amp; control loop</h2>
+        <p class="summary">Core 1 handles BLE; Core 0 applies events and sends servo commands.</p>
+      </div></div>
+      <div class="diagram">
+        <svg viewBox="0 0 960 464" role="img" aria-labelledby="pico-svg-title pico-svg-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="pico-svg-title">Pico firmware control flow</title>
+          <desc id="pico-svg-desc">Initialize the servo bus, zero targets, BLE core, and 20 hertz timer. Repeatedly drain queued BLE events and apply mode changes. Joint targets update angles; XYZ targets use inverse kinematics while wrist and gripper stay manual; safety events reset to zero in joint mode. Each 50 millisecond tick clamps and maps targets. Send changed outputs over UART, otherwise skip sending. Return to event processing. Failed inverse kinematics holds the last valid pose.</desc>
+          <path class="edge" d="M285 64H350"/>
+          <path class="join" d="M642 108V135H155M642 135H805"/>
+          <path class="edge" d="M155 135V159"/><path class="edge" d="M480 135V159"/><path class="edge" d="M805 135V159"/>
+          <text class="label" x="155" y="130">Joint target</text><text class="label" x="480" y="130">XYZ target</text><text class="label" x="805" y="130">Owner release / disconnect</text>
+          <path class="join" d="M155 247V278H805V247M480 247V278M155 278H120"/>
+          <path class="edge" d="M120 278V323"/>
+          <path class="edge" d="M215 367H260"/><path class="edge" d="M500 367H542"/>
+          <path class="edge" d="M718 367H750"/><text class="label" x="734" y="356">Yes</text>
+          <path class="join loop" d="M842 411V440H630"/>
+          <path class="edge loop" d="M630 427V440H12V8H642V20"/>
+          <text class="label" x="652" y="434">No</text><text class="label" x="325" y="458">Repeat · process events continuously; send only on control ticks</text>
+
+          <rect class="node neutral" x="25" y="20" width="260" height="88" rx="16"/>
+          <text x="155" y="43">Initialize hardware &amp; targets</text>
+          <text class="detail" x="155" y="65"><tspan x="155">Prepare the servo connection, start</tspan><tspan x="155" dy="16">Bluetooth, and set the initial targets</tspan><tspan x="155" dy="16">to zero before starting the timer.</tspan></text>
+          <rect class="node" x="350" y="20" width="585" height="88" rx="9"/>
+          <text x="642" y="43">Drain BLE events &amp; apply mode changes</text>
+          <text class="detail" x="642" y="69"><tspan x="642">Read queued Bluetooth commands and update the selected control mode;</tspan><tspan x="642" dy="16">use the newest targets, or keep the current ones if no update arrived.</tspan></text>
+          <rect class="node" x="25" y="159" width="260" height="88" rx="9"/>
+          <text x="155" y="182">Update joint targets</text>
+          <text class="detail" x="155" y="204"><tspan x="155">Store the requested angles for all</tspan><tspan x="155" dy="16">six joints so the next control tick</tspan><tspan x="155" dy="16">can turn them into servo commands.</tspan></text>
+          <rect class="node" x="350" y="159" width="260" height="88" rx="9"/>
+          <text x="480" y="182">Solve XYZ → joint angles</text>
+          <text class="detail" x="480" y="204"><tspan x="480">Calculate joint angles that place the</tspan><tspan x="480" dy="16">tip at the requested X/Y/Z position;</tspan><tspan x="480" dy="16">keep wrist and gripper control manual.</tspan></text>
+          <rect class="node safety" x="675" y="159" width="260" height="88" rx="9"/>
+          <text x="805" y="182">Set safe pose</text>
+          <text class="detail" x="805" y="204"><tspan x="805">Reset all joint targets to zero and</tspan><tspan x="805" dy="16">return to joint mode when the owner</tspan><tspan x="805" dy="16">releases control or disconnects.</tspan></text>
+          <rect class="node" x="25" y="323" width="190" height="88" rx="9"/>
+          <text x="120" y="346">Every 50 ms</text>
+          <text class="detail" x="120" y="368"><tspan x="120">Run the servo-output</tspan><tspan x="120" dy="16">step 20 times a second,</tspan><tspan x="120" dy="16">using the latest targets.</tspan></text>
+          <rect class="node" x="260" y="323" width="240" height="88" rx="9"/>
+          <text x="380" y="346">Clamp &amp; map targets</text>
+          <text class="detail" x="380" y="368"><tspan x="380">Keep angles within each joint's</tspan><tspan x="380" dy="16">limits and convert them into</tspan><tspan x="380" dy="16">positions the servos understand.</tspan></text>
+          <path class="node" d="M630 307L718 367L630 427L542 367Z"/>
+          <text x="630" y="350">Changed?</text>
+          <text class="detail" x="630" y="368"><tspan x="630">Has a target changed</tspan><tspan x="630" dy="16">enough to send?</tspan></text>
+          <rect class="node" x="750" y="323" width="185" height="88" rx="9"/>
+          <text x="842" y="346">Send over UART</text>
+          <text class="detail" x="842" y="368"><tspan x="842">Send new positions</tspan><tspan x="842" dy="16">through the wired serial</tspan><tspan x="842" dy="16">link to move the servos.</tspan></text>
+        </svg>
+      </div>
+      <p class="note"><strong>XYZ mode:</strong> inverse kinematics (IK) calculates positioning joints 3–6; joints 1–2 stay manual. If IK fails, hold the last valid pose. This loop sends position commands without measured-position feedback; servo-bus initialization failure leaves outputs idle.</p>
+      <p class="sources">Code: <a href="../arm/main.c">main.c</a> · <a href="../arm/src/kinematics/arm_kinematics.c">arm_kinematics.c</a> · <a href="../arm/src/hal/servo_bus.cpp">servo_bus.cpp</a></p>
+    </section>
+    <footer>Solid arrows: flow or messages · dashed arrows: repeat · amber: safe-pose path. Open this file directly in a browser; no server, scripts, or internet connection required.</footer>
+  </main>
+</body>
+</html>

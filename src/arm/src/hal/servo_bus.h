@@ -33,6 +33,9 @@ typedef struct servo_bus_config {
   uint8_t default_servo_id;
   uint16_t default_move_time_ms;
   float default_step_degrees;
+  // Active-HIGH buffer OEs. Ignored by the controller-board backend.
+  uint8_t tx_enable_pin;
+  uint8_t rx_enable_pin;
 } servo_bus_config_t;
 
 typedef struct servo_bus_mode_state {
@@ -46,6 +49,8 @@ bool servo_bus_is_initialized(void);
 servo_bus_status_t servo_bus_init(const servo_bus_config_t* config);
 
 servo_bus_status_t servo_bus_ping(uint8_t id);
+// Direct moves clamp raw position to 0..1000 and time to 0..30000 ms.
+// Degree-based APIs retain the centered -120..120 degree coordinate system.
 servo_bus_status_t servo_bus_move_raw(uint8_t id, int16_t position, uint16_t time_ms);
 servo_bus_status_t servo_bus_move_degrees(uint8_t id, float degrees, uint16_t time_ms);
 servo_bus_status_t servo_bus_stop(uint8_t id);
@@ -66,6 +71,7 @@ servo_bus_status_t servo_bus_broadcast_led_on(void);
 servo_bus_status_t servo_bus_broadcast_led_off(void);
 
 servo_bus_status_t servo_bus_set_id(uint8_t old_id, uint8_t new_id);
+// Broadcast query_id 254 is for discovering one connected servo only.
 servo_bus_status_t servo_bus_get_id(uint8_t query_id, uint8_t* out_id);
 servo_bus_status_t servo_bus_set_angle_offset(uint8_t id, int8_t offset);
 servo_bus_status_t servo_bus_save_angle_offset(uint8_t id);
